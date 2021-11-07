@@ -1,0 +1,30 @@
+---
+title: "DepthKopy V0.2.1 Documentation"
+author: "Richard J. Edwards"
+date: "2021-11-07"
+output:
+  html_document:
+    css: http://www.slimsuite.unsw.edu.au/stylesheets/slimhtml.css
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    toc_depth: 3
+    number_sections: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+<a name="Top" />
+
+
+# DepthKopy: Single-copy read-depth and kmer based copy number analysis
+
+DepthKopy is an updated version of the gregcnv methods of Diploidocus. Details to follow.
+
+
+<br>
+<small>&copy; 2021 Richard Edwards | richard.edwards@unsw.edu.au</small>
