@@ -19,23 +19,15 @@
 """
 Module:       DepthKopy
 Description:  Single-copy read-depth and kmer based copy number analysis
-Version:      0.2.1
-Last Edit:    26/10/21
+Version:      0.3.1
+Last Edit:    20/11/21
+Citation:     Chen SH et al. & Edwards RJ (preprint): bioRxiv 2021.06.02.444084 (doi: 10.1101/2021.06.02.444084)
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
 Function:
-    The function of this module will be added here.
-
-    1. Check input files and programs.
-
-    2. Check/generate BAM file. =bam
-
-    2a. Fork out samtools depth/mpileup tmp files.
-    2b. Compile and reshape temp files. =depfile
-
-    3. Call DepthCopy.R to calculate CN and/or Regcheck. =regfile
-
-    4. Check and report tables output.
+    DepthKopy is an updated version of the regcnv methods of Diploidocus. Details to follow. Please see the
+    [DepthSizer](https://github.com/slimsuite/depthsizer) and [Diploidocus](https://github.com/slimsuite/diploidocus)
+    documentation for more details. An example use can also be found in the Waratah genome paper preprint (see Citation).
 
 Commandline:
     ### ~ Main DepthKopy run options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -51,8 +43,8 @@ Commandline:
     quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
     depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
     homfile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
-    regfile=FILE    : File of SeqName, Start, End positions (or GFF) for read coverage checking [None]
-    checkfields=LIST: Fields in checkpos file to give Locus, Start and End for checking [Hit,SbjStart,SbjEnd]
+    regfile=CDICT   : List of Name:Files (or single FILE) of SeqName, Start, End positions (or GFF) for CN checking [None]
+    checkfields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
     gfftype=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
     winsize=INT     : Generate additional window-based depth and CN profiles of INT bp (0 to switch off) [100000]
     winstep=NUM     : Generate window every NUM bp (or fraction of winsize=INT if <=1) [1]
@@ -87,11 +79,14 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     # 0.1.2 - Implemented kmerself=F toggle.
     # 0.2.0 - Added seqstats=T/F : Whether to output CN and depth data for full sequences as well as BUSCO genes [False]
     # 0.2.1 - Fixed occasional R BUSCO bug and renamed pngplots directory after basefile.
+    # 0.2.2 - Fixed ignoredate bug.
+    # 0.3.0 - Added support for multiple regfiles. Added maxcn=INT option. Fixed end of sequence window size.
+    # 0.3.1 - Fixed reghead bug.
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
     '''
-    # [ ] : Populate Module Docstring with basic info.
+    # [Y] : Populate Module Docstring with basic info.
     # [Y] : Populate makeInfo() method with basic info.
     # [ ] : Add full description of program to module docstring.
     # [Y] : Create initial working version of program.
@@ -99,13 +94,15 @@ def todo():     ### Major Functionality to Add - only a method for PythonWin col
     # [ ] : Add to SLiMSuite or SeqSuite.
     # [Y] : Add chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
     # [Y] : Add KAT read and self kmers and self-homology depth files that can be generated and added to depthcopy.R.
-    # [ ] : Add check for KAT installation.
-    # [ ] : Change pngplots/ to $BASEFILE.pngplots/
+    # [Y] : Add check for KAT installation.
+    # [Y] : Change pngplots/ to $BASEFILE.pngplots/
+    # [ ] : Improve software checks and file checks for re-running on pre-generated data without programs installed.
+    # [ ] : Make full run docstring for docHTML.
     '''
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('DepthKopy', '0.2.1', 'October 2021', '2021')
+    (program, version, last_edit, copy_right) = ('DepthKopy', '0.3.1', 'November 2021', '2021')
     description = 'Single-copy read-depth based copy number analysis'
     author = 'Dr Richard J. Edwards.'
     comments = ['This program is still in development and has not been published.',rje_obj.zen()]
@@ -189,7 +186,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
     File:file handles with matching str filenames
 
     List:list
-    - CheckFields=LIST: Fields in checkpos file to give Locus, Start and End for checking [Hit,SbjStart,SbjEnd]
+    - CheckFields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
     - ChromCheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
     - GFFType=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
     - Reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
@@ -260,7 +257,15 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         '''
         # DepthKopy: Single-copy read-depth and kmer based copy number analysis
 
-        DepthKopy is an updated version of the gregcnv methods of Diploidocus. Details to follow.
+        DepthKopy is an updated version of the regcnv methods of Diploidocus. Details to follow. Please see the
+        [DepthSizer](https://github.com/slimsuite/depthsizer) and [Diploidocus](https://github.com/slimsuite/diploidocus)
+        documentation for more details. An example use can also be found in the Waratah genome paper preprint:
+
+        > Chen SH, Rossetto M, van der Merwe M, Lu-Irving P, Yap JS, Sauquet H, Bourke G, Amos TG, Bragg JG & Edwards RJ (preprint):
+        Chromosome-level de novo genome assembly of Telopea speciosissima (New South Wales waratah) using long-reads,
+        linked-reads and Hi-C. [bioRxiv 2021.06.02.444084](https://www.biorxiv.org/content/10.1101/2021.06.02.444084v2.full);
+        doi: 10.1101/2021.06.02.444084.
+
         '''
         try:### ~ [1] ~ Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             if self.getBool('DocHTML'): return rje_rmd.docHTML(self)
@@ -310,7 +315,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
             # - RegCNV from GFF
             # - RegCNV from TSV
             return depthcopy
-        except: self.errorLog('%s.depthCopy error' % self.prog())
+        except: self.errorLog('%s.depthCopy error' % self.prog()); return False
 #########################################################################################################################
     def homFile(self):  ### Checks and generates self-mapping homology file
         '''
@@ -338,7 +343,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
                 for fline in os.popen(mapcmd).readlines():
                     if rje.chomp(fline) and fline[:1] != '0':
                         self.printLog('#SELF',rje.chomp(fline))
-            if not self.checkBAMFile(bamfile, makeindex=True, bai=False, csi=False, needed=True): return None
+            if not self.checkBAMFile(bamfile, makeindex=True, bai=False, csi=False, needed=False): return None
             ### ~ [3] Generate self depth file ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             quick = self.getBool('QuickDepth')
             self.setBool({'QuickDepth':True})
@@ -354,13 +359,14 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         '''
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             options = ['pngdir={0}.plots'.format(self.baseFile())]
-            for cmd in ['depfile','busco','scdepth','regfile','gfftype','winsize','winstep','adjust','basefile',
+            for cmd in ['depfile','busco','scdepth','regfile','gfftype','winsize','winstep','adjust','cnmax','basefile',
                         'katfile', 'katself', 'homfile']:
                 val =  self.getData(cmd)
                 if val and val != 'None':
                     options.append('{0}={1}'.format(cmd,val))
             if self.list['ChromCheck']:
                 options.append('chromcheck={0}'.format(','.join(self.list['ChromCheck'])))
+            options.append('reghead={0}'.format(','.join(self.list['CheckFields'])))
             if self.debugging(): options.append('debug=TRUE')
             if self.getBool('SeqStats'): options.append('seqstats=TRUE')
             optionstr = ' '.join(options)

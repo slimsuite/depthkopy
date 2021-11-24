@@ -238,7 +238,7 @@ class KAT(rje_obj.RJE_Object):
     ### <3> ### KAT run Methods                                                                                         #
 #########################################################################################################################
     def checkForKat(self,report=True):
-        return self.checkForProgram('kat',report,needed=True)
+        return self.checkForProgram('kat',report,needed=False)
 #########################################################################################################################
     def katKmers(self,assembly=None,kmerfiles=None,basefile=None,force=None,trim10x=True):    ### Performs read kmer kat sect analysis
         '''

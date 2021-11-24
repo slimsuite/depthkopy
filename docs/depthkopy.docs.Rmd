@@ -1,7 +1,7 @@
 ---
-title: "DepthKopy V0.2.1 Documentation"
+title: "DepthKopy V0.3.1 Documentation"
 author: "Richard J. Edwards"
-date: "2021-11-07"
+date: "2021-11-24"
 output:
   html_document:
     css: http://www.slimsuite.unsw.edu.au/stylesheets/slimhtml.css
@@ -23,7 +23,15 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # DepthKopy: Single-copy read-depth and kmer based copy number analysis
 
-DepthKopy is an updated version of the gregcnv methods of Diploidocus. Details to follow.
+DepthKopy is an updated version of the regcnv methods of Diploidocus. Details to follow. Please see the
+[DepthSizer](https://github.com/slimsuite/depthsizer) and [Diploidocus](https://github.com/slimsuite/diploidocus)
+documentation for more details. An example use can also be found in the Waratah genome paper preprint:
+
+> Chen SH, Rossetto M, van der Merwe M, Lu-Irving P, Yap JS, Sauquet H, Bourke G, Amos TG, Bragg JG & Edwards RJ (preprint):
+Chromosome-level de novo genome assembly of Telopea speciosissima (New South Wales waratah) using long-reads,
+linked-reads and Hi-C. [bioRxiv 2021.06.02.444084](https://www.biorxiv.org/content/10.1101/2021.06.02.444084v2.full);
+doi: 10.1101/2021.06.02.444084.
+
 
 
 <br>

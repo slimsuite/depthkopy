@@ -19,8 +19,8 @@
 """
 Module:       rje_readcore
 Description:  Read mapping and analysis core module
-Version:      0.5.0
-Last Edit:    25/10/21
+Version:      0.6.0
+Last Edit:    11/11/21
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
 Function:
@@ -49,10 +49,11 @@ Commandline:
     quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
     depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
     regfile=FILE    : File of SeqName, Start, End positions (or GFF) for read coverage checking [None]
-    checkfields=LIST: Fields in checkpos file to give Locus, Start and End for checking [Hit,SbjStart,SbjEnd]
+    checkfields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
     gfftype=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
     depadjust=INT   : Advanced R density bandwidth adjustment parameter [12]
     seqstats=T/F    : Whether to output CN and depth data for full sequences as well as BUSCO genes [False]
+    cnmax=INT       : Max. y-axis value for CN plot (and mode multiplier for related depth plots) [4]
     ### ~ System options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
     forks=X         : Number of parallel sequences to process at once [0]
     killforks=X     : Number of seconds of no activity before killing all remaining forks. [36000]
@@ -89,6 +90,7 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     #       - MapAdjust2 = allbases, not covbases
     #       - MapBases = Use map bases, not covbases for min read volumne
     #       - MapRatio = Use mapbases adjusted by indelratio
+    # 0.6.0 - Added support for multiple regfiles and setting max limit for CN graphics.
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
@@ -101,12 +103,13 @@ def todo():     ### Major Functionality to Add - only a method for PythonWin col
     # [ ] : Add to SLiMSuite or SeqSuite.
     # [ ] : Add module load if cannot find program.
     # [ ] : Add NGMLR to mappers.
-    # [ ] : Try using total sequence length not covbases (samtools coverage $3 not $5) for CovBases calculation.
+    # [Y] : Try using total sequence length not covbases (samtools coverage $3 not $5) for CovBases calculation.
+    # [ ] : Add bamcsi=T/F : Use CSI indexing for BAM files, not BAI (needed for v long scaffolds) [False]
     '''
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('ReadMap', '0.5.0', 'October 2021', '2021')
+    (program, version, last_edit, copy_right) = ('ReadMap', '0.6.0', 'November 2021', '2021')
     description = 'Read mapping analysis module'
     author = 'Dr Richard J. Edwards.'
     comments = ['This program is still in development and has not been published.',rje_obj.zen()]
@@ -187,6 +190,7 @@ class ReadCore(rje_obj.RJE_Object):
 
     Int:integer
     - Adjust=INT   : Advanced R density bandwidth adjustment parameter [12]
+    - CNMax=INT       : Max. y-axis value for CN plot (and mode multiplier for related depth plots) [4]
 
     Num:float
     - SCDepth=NUM     : Single copy ("diploid") read depth. If zero, will use SC BUSCO mode [0]
@@ -194,7 +198,7 @@ class ReadCore(rje_obj.RJE_Object):
     File:file handles with matching str filenames
     
     List:list
-    - CheckFields=LIST: Fields in checkpos file to give Locus, Start and End for checking [Hit,SbjStart,SbjEnd]
+    - CheckFields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
     - GFFType=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
     - Reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
     - ReadType=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
@@ -214,7 +218,7 @@ class ReadCore(rje_obj.RJE_Object):
         ### ~ Basics ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
         self.strlist = ['BAM','BUSCO','DepFile','PAF','RegFile','SeqIn','TmpDir']
         self.boollist = ['QuickDepth','SeqStats']
-        self.intlist = ['Adjust']
+        self.intlist = ['Adjust','CNMax']
         self.numlist = ['SCDepth']
         self.filelist = []
         self.listlist = ['CheckFields','GFFType','Reads','ReadType']
@@ -237,7 +241,7 @@ class ReadCore(rje_obj.RJE_Object):
         self.setStr({'BAM':'None','BUSCO':'None','DepFile':'None','PAF':'None','RegFile':'None','SeqIn':'None','TmpDir':'./tmpdir/',
                      'Minimap2':'minimap2','Samtools':'samtools'})
         self.setBool({'QuickDepth':False,'SeqStats':False})
-        self.setInt({'Adjust':12})
+        self.setInt({'Adjust':12,'CNMax':4})
         self.setNum({'AllBases':0,'CovBases':0,'MapAjust':0,'MapBases':0,'OldAdjust':0,'SCDepth':0})
         self.list['CheckFields'] = ['SeqName','Start','End']
         self.list['GFFType'] = ['gene']
@@ -256,13 +260,16 @@ class ReadCore(rje_obj.RJE_Object):
         '''
         ### Class Options (No need for arg if arg = att.lower()) ###
         self._cmdReadList(cmd,'path',['TmpDir'])  # String representing directory path
-        self._cmdReadList(cmd,'file',['BAM','BUSCO','DepFile','PAF','RegFile','SeqIn'])  # String representing file path
+        self._cmdReadList(cmd,'str',['RegFile'])  # String representing directory path
+        self._cmdReadList(cmd,'file',['BAM','BUSCO','DepFile','PAF','SeqIn'])  # String representing file path
         self._cmdReadList(cmd,'bool',['QuickDepth','SeqStats','Minimap2','Samtools','Rscript'])
+        self._cmdReadList(cmd,'int',['Adjust','CNMax'])
         self._cmdReadList(cmd,'num',['SCDepth'])
         self._cmdReadList(cmd,'glist',['Reads'])
         self._cmdReadList(cmd,'list',['CheckFields','GFFType','ReadType'])
         self._cmdRead(cmd,'int','Adjust','depadjust')   # Integers
         self._cmdRead(cmd,type='str',att='RegFile',arg='regcheck')  # No need for arg if arg = att.lower()
+        self._cmdRead(cmd,type='list',att='CheckFields',arg='reghead')  # No need for arg if arg = att.lower()
 #########################################################################################################################
     def _cmdList(self):     ### Sets Attributes from commandline
         '''
@@ -562,16 +569,17 @@ class ReadCore(rje_obj.RJE_Object):
                 raise IOError('BUSCO file not given (busco=FILE)')
             ### ~ [3] Check RegFile ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             if self.getStrLC('RegFile'):
-                rje.checkForFiles([self.getStr('RegFile')],basename='',log=self.log,ioerror=True)
+                regfilename = string.split(string.split(self.getStr('RegFile'),',')[0],':')[-1]
+                rje.checkForFiles([regfilename],basename='',log=self.log,ioerror=True)
                 ## ~ [3a] Check Fields ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ##
-                if self.getStrLC('RegFile').endswith('.gff') or self.getStrLC('RegFile').endswith('.gff3'):
+                if regfilename.endswith('.gff') or regfilename.endswith('.gff3'):
                     self.printLog('#GFF','GFF file recognised for RegFile')
                 else:
                     #!# Add feature to recognise and change first field if not given #!#
                     if not len(self.list['CheckFields']) == 3:
                         raise ValueError('checkfields=LIST must have exactly 3 elements: SeqName, Start, End. %d found!' % len(self.list['CheckFields']))
                     [locusfield,startfield,endfield] = self.list['CheckFields']
-                    cdb = db.addTable(self.getStr('RegFile'),mainkeys='auto',name='check',expect=True)
+                    cdb = db.addTable(regfilename,mainkeys='auto',name='check',expect=True)
                     if not cdb: raise IOError('Cannot find checkpos file "%s"' % self.getStr('CheckPos'))
                     if locusfield not in cdb.fields():
                         self.warnLog('Field "%s" not found in checkpos file: will use "%s for sequence name' % (locusfield,cdb.fields()[0]))
@@ -815,6 +823,7 @@ class ReadCore(rje_obj.RJE_Object):
                 bamlist.append(mapfile)
             ### ~ [3] ~ Merge individual Map files ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             if paf:
+                paffile = outfile
                 if len(bamlist) > 1:
                     bammerge = 'cat {0} > {1}'.format(' '.join(bamlist), paffile)
                     logline = self.loggedSysCall(bammerge, append=True)
@@ -1126,7 +1135,7 @@ class ReadCore(rje_obj.RJE_Object):
         '''
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             options = ['pngdir={0}.plots'.format(self.baseFile())]
-            if not cmds: cmds = ['depfile','busco','scdepth','regfile','gfftype','winsize','winstep','adjust','basefile']
+            if not cmds: cmds = ['depfile','busco','scdepth','regfile','gfftype','winsize','winstep','adjust','cnmax','basefile']
             for cmd in cmds:
                 val =  self.getData(cmd)
                 if val and val != 'None':
