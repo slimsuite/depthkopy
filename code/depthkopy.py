@@ -19,15 +19,46 @@
 """
 Module:       DepthKopy
 Description:  Single-copy read-depth and kmer based copy number analysis
-Version:      0.3.1
-Last Edit:    20/11/21
+Version:      0.4.0
+Last Edit:    02/12/21
 Citation:     Chen SH et al. & Edwards RJ (preprint): bioRxiv 2021.06.02.444084 (doi: 10.1101/2021.06.02.444084)
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
 Function:
-    DepthKopy is an updated version of the regcnv methods of Diploidocus. Details to follow. Please see the
-    [DepthSizer](https://github.com/slimsuite/depthsizer) and [Diploidocus](https://github.com/slimsuite/diploidocus)
-    documentation for more details. An example use can also be found in the Waratah genome paper preprint (see Citation).
+    DepthKopy is an updated version of the regcnv methods of [Diploidocus](https://github.com/slimsuite/diploidocus),
+    using the same single-copy read depth estimation from BUSCO Complete genes as [DepthSizer](https://github.com/slimsuite/depthsizer).
+    DepthKopy needs a genome assembly (fasta format, `seqin=FILE`), a set of long read (ONT, PacBio or HiFi) data for the assembly
+    (`reads=FILELIST` and `readtype=LIST`) or mapped BAM file (`bam=FILE`), and a BUSCO/BUSCOMP full table of results (`busco=TSVFILE`)
+    or pre-calculated single-copy read depth (`scdepth=NUM`). For kmer analysis, reads also need to be provided with
+    `kmerreads=FILELIST` (and `10xtrim=T` if barcoded 10x linked reads).
+
+    Optionally, it can then take one or more additional sources of assembly regions for which stats will be calculated.
+    Delimited text files or GFF files can be provided using `regfile=FILE` for a single file, or `regfile=CDICT` for multiple
+    files.  Multiple files are given in the form `Name1:File1,Name2:File2,...,NameN:FileN`, from which each unique `Name` will
+    be plotted as a separate violin (see output). GFF files will be parsed to extract any features matching the types given
+    by `gfftype=LIST` (default = `gene`). Delimited files will need to have headers that match those provided by
+    `checkfields=LIST` (default = `SeqName,Start,End`). By default, 100 kb non-overlapping windows will also be output
+    (`winsize=INT` `winstep=NUM`). Unless `seqstats=F`, statistics will also be calculated per assembly scaffold. Subsets of
+    scaffolds can be given separate window output plots using `chromcheck=LIST` (scaffold names) or `chromcheck=INT` (min
+    size).
+
+    DepthKopy works on the principle that `Complete` BUSCO genes should represent predominantly single copy (diploid
+    read depth) regions along with some poor quality and/or repeat regions. Assembly artefacts and collapsed repeats etc.
+    are predicted to deviate from diploid read depth in an inconsistent manner. Therefore, even if less than half the
+    region is actually diploid coverage, the **modal** read depth is expected to represent the actual single copy
+    read depth.
+
+    DepthKopy uses `samtools mpileup` (or `samtools depth` if `quickdepth=T`) to calculate the per-base read depth.
+    This is converted into an estimated single copy read depth using a smoothed density plot of BUSCO single copy genes.
+    BUSCO single-copy genes are parsed from a BUSCO full results table, given by `busco=TSVFILE` (default
+    `full_table_$BASEFILE.busco.tsv`). This can be replaced with any table matching the BUSCO fields:
+    ['BuscoID','Status','Contig','Start','End','Score','Length']. Entries are reduced to those with `Status` = `Complete`
+    and the `Contig`, `Start` and `End` fields are used to define the regions that should be predominantly single copy.
+    Output from BUSCOMP is also compatible with DepthKopy. DepthKopy has been tested with outputs from BUSCO v3 and v5.
+
+    Output is a table of depth statistics and predicted copy number for each input dataset (BUSCO Complete, BUSCO Duplicated,
+    `regfile` Regions, assembly scaffolds (`seqstat=T`) and sliding windows). Data visualisations are also output for each
+    region set using [ggstatsplot](https://indrajeetpatil.github.io/ggstatsplot/).
 
 Commandline:
     ### ~ Main DepthKopy run options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -82,6 +113,7 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     # 0.2.2 - Fixed ignoredate bug.
     # 0.3.0 - Added support for multiple regfiles. Added maxcn=INT option. Fixed end of sequence window size.
     # 0.3.1 - Fixed reghead bug.
+    # 0.4.0 - Updated to use the seqin file to restrict sequences under analysis from regfile/BUSCO etc. Updated docs.
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
@@ -102,7 +134,7 @@ def todo():     ### Major Functionality to Add - only a method for PythonWin col
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('DepthKopy', '0.3.1', 'November 2021', '2021')
+    (program, version, last_edit, copy_right) = ('DepthKopy', '0.4.0', 'December 2021', '2021')
     description = 'Single-copy read-depth based copy number analysis'
     author = 'Dr Richard J. Edwards.'
     comments = ['This program is still in development and has not been published.',rje_obj.zen()]
@@ -257,14 +289,217 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         '''
         # DepthKopy: Single-copy read-depth and kmer based copy number analysis
 
-        DepthKopy is an updated version of the regcnv methods of Diploidocus. Details to follow. Please see the
-        [DepthSizer](https://github.com/slimsuite/depthsizer) and [Diploidocus](https://github.com/slimsuite/diploidocus)
-        documentation for more details. An example use can also be found in the Waratah genome paper preprint:
+        DepthKopy is an updated version of the regcnv methods of [Diploidocus](https://github.com/slimsuite/diploidocus),
+        using the same single-copy read depth estimation from BUSCO Complete genes as [DepthSizer](https://github.com/slimsuite/depthsizer).
+
+        DepthKopy needs a genome assembly (fasta format, `seqin=FILE`), a set of long read (ONT, PacBio or HiFi) data for the assembly
+        (`reads=FILELIST` and `readtype=LIST`) or mapped BAM file (`bam=FILE`), and a BUSCO/BUSCOMP full table of results (`busco=TSVFILE`)
+        or pre-calculated single-copy read depth (`scdepth=NUM`). For kmer analysis, reads also need to be provided with
+        `kmerreads=FILELIST` (and `10xtrim=T` if barcoded 10x linked reads).
+
+        Optionally, it can then take one or more additional sources of assembly regions for which stats will be calculated.
+        Delimited text files or GFF files can be provided using `regfile=FILE` for a single file, or `regfile=CDICT` for multiple
+        files.  Multiple files are given in the form `Name1:File1,Name2:File2,...,NameN:FileN`, from which each unique `Name` will
+        be plotted as a separate violin (see output). GFF files will be parsed to extract any features matching the types given
+        by `gfftype=LIST` (default = `gene`). Delimited files will need to have headers that match those provided by
+        `checkfields=LIST` (default = `SeqName,Start,End`). By default, 100 kb non-overlapping windows will also be output
+        (`winsize=INT` `winstep=NUM`). Unless `seqstats=F`, statistics will also be calculated per assembly scaffold. Subsets of
+        scaffolds can be given separate window output plots using `chromcheck=LIST` (scaffold names) or `chromcheck=INT` (min
+        size).
+
+        DepthKopy works on the principle that `Complete` BUSCO genes should represent predominantly single copy (diploid
+        read depth) regions along with some poor quality and/or repeat regions. Assembly artefacts and collapsed repeats etc.
+        are predicted to deviate from diploid read depth in an inconsistent manner. Therefore, even if less than half the
+        region is actually diploid coverage, the **modal** read depth is expected to represent the actual single copy
+        read depth.
+
+        DepthKopy uses `samtools mpileup` (or `samtools depth` if `quickdepth=T`) to calculate the per-base read depth.
+        This is converted into an estimated single copy read depth using a smoothed density plot of BUSCO single copy genes.
+        BUSCO single-copy genes are parsed from a BUSCO full results table, given by `busco=TSVFILE` (default
+        `full_table_$BASEFILE.busco.tsv`). This can be replaced with any table matching the BUSCO fields:
+        ['BuscoID','Status','Contig','Start','End','Score','Length']. Entries are reduced to those with `Status` = `Complete`
+        and the `Contig`, `Start` and `End` fields are used to define the regions that should be predominantly single copy.
+        Output from BUSCOMP is also compatible with DepthKopy. DepthKopy has been tested with outputs from BUSCO v3 and v5.
+
+        Output is a table of depth statistics and predicted copy number for each input dataset (BUSCO Complete, BUSCO Duplicated,
+        `regfile` Regions, assembly scaffolds (`seqstat=T`) and sliding windows). Data visualisations are also output for each
+        region set using [ggstatsplot](https://indrajeetpatil.github.io/ggstatsplot/).
+
+        ## Citation
+
+        DepthKopy is still under review as part of the Waratah genome paper. For now, please cite the preprint:
 
         > Chen SH, Rossetto M, van der Merwe M, Lu-Irving P, Yap JS, Sauquet H, Bourke G, Amos TG, Bragg JG & Edwards RJ (preprint):
         Chromosome-level de novo genome assembly of Telopea speciosissima (New South Wales waratah) using long-reads,
         linked-reads and Hi-C. [bioRxiv 2021.06.02.444084](https://www.biorxiv.org/content/10.1101/2021.06.02.444084v2.full);
         doi: 10.1101/2021.06.02.444084.
+
+        ---
+
+        # Running DepthKopy
+
+        DepthKopy is written in Python 2.x and can be run directly from the commandline:
+
+            python $CODEPATH/depthkopy.py [OPTIONS]
+
+        If running as part of [SLiMSuite](http://slimsuite.blogspot.com/), `$CODEPATH` will be the SLiMSuite `tools/`
+        directory. If running from the standalone [DepthKopy git repo](https://github.com/slimsuite/depthkopy), `$CODEPATH`
+        will be the path the to `code/` directory.
+
+        ## Dependencies
+
+        Unless `bam=FILE` is given, [minimap2](https://github.com/lh3/minimap2) must be installed and either added to the
+        environment `$PATH` or given to DepthSizer with the `minimap2=PROG` setting, and [samtools](http://www.htslib.org/)
+        needs to be installed. R and [tidyverse](https://www.tidyverse.org/) will also need be installed, ideally with the
+        [ggstatsplot](https://indrajeetpatil.github.io/ggstatsplot/) and `writexl` libraries also installed. To generate
+        documentation with `dochtml`, a pandoc environment variable must be set, e.g.
+
+            export RSTUDIO_PANDOC=/Applications/RStudio.app/Contents/MacOS/pandoc
+
+        For DepthKopy documentation, run with `dochtml=T` and read the `*.docs.html` file generated.
+
+        ## Commandline options
+
+        A list of commandline options can be generated at run-time using the `-h` or `help` flags. Please see the general
+        [SLiMSuite documentation](http://slimsuite.blogspot.com/2013/08/command-line-options.html) for details of how to
+        use commandline options, including setting default values with **INI files**.
+
+        ```
+        ### ~ Main DepthKopy run options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        seqin=FILE      : Input sequence assembly. (Must be *.fa or *.fasta for kmerself=T.) [None]
+        basefile=FILE   : Root of output file names [diploidocus or $SEQIN basefile]
+        scdepth=NUM     : Single copy ("diploid") read depth. If zero, will use SC BUSCO mode [0]
+        bam=FILE        : BAM file of long reads mapped onto assembly [$BASEFILE.bam]
+        reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
+        readtype=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
+        dochtml=T/F     : Generate HTML DepthKopy documentation (*.docs.html) instead of main run [False]
+        ### ~ Depth and Copy Number options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        busco=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
+        quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
+        depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
+        homfile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
+        regfile=CDICT   : List of Name:Files (or single FILE) of SeqName, Start, End positions (or GFF) for CN checking [None]
+        checkfields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
+        gfftype=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
+        winsize=INT     : Generate additional window-based depth and CN profiles of INT bp (0 to switch off) [100000]
+        winstep=NUM     : Generate window every NUM bp (or fraction of winsize=INT if <=1) [1]
+        chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
+        seqstats=T/F    : Whether to output CN and depth data for full sequences as well as BUSCO genes [True]
+        ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
+        kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
+        10xtrim=T/F         : Whether to trim 16bp 10x barcodes from Read 1 of Kmer Reads data for KAT analysis [False]
+        ### ~ System options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        forks=X         : Number of parallel sequences to process at once [0]
+        killforks=X     : Number of seconds of no activity before killing all remaining forks. [36000]
+        forksleep=X     : Sleep time (seconds) between cycles of forking out more process [0]
+        tmpdir=PATH     : Path for temporary output files during forking [./tmpdir/]
+        ### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        ```
+
+        # DepthKopy workflow and options
+
+        The main inputs for DepthKopy copy number prediction are:
+        * `seqin=FILE` : Input sequence assembly [Required].
+        * `reads=FILELIST`: List of fasta/fastq files containing long reads. Wildcard allowed. Can be gzipped. A BAM file can be supplied instead with `bam=FILE`.
+        * `readtype=LIST` : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
+        * `busco=TSVFILE` : BUSCO(MP) full table [`full_table_$BASEFILE.busco.tsv`] used for calculating single copy ("diploid") read depth.
+
+        ## Step 1: BAM file (read mapping)
+
+        The first step is to generate a BAM file by mapping `reads` on to `seqin` using [minimap2](https://github.com/lh3/minimap2).
+        A pre-generated BAM file can be given instead using `bam=FILE`. There should be no secondary mapping of reads, as
+        these will inflate read depths, so filter these out if they were allowed during mapping. Similarly, the BAM file
+        should not contain unmapped reads. (These should be filtered during processing if present.) If no BAM file setting
+        is given, the BAM file will be named `$BASEFILE.bam`, where `$BASEFILE` is set by `basefile=X`.
+
+        ## Step 2: BUSCO(MP) results
+
+        DepthKopy works on the principle that `Complete` BUSCO genes should represent predominantly single copy (diploid read
+        depth) regions along with some poor-quality and/or repeat regions. Assembly artefacts and collapsed repeats etc.
+        are predicted to deviate from diploid read depth in an inconsistent manner. Therefore, even if less than half the
+        region is actually diploid coverage, the **modal** read depth is expected to represent the actual single copy
+        read depth. This is estimated using a smoothed density distribution calculated using R `density()`.
+        BUSCO single-copy genes are parsed from a BUSCO full results table, given by `busco=TSVFILE` (default
+        `full_table_$BASEFILE.busco.tsv`). This can be replaced with any table with the fields:
+        ['BuscoID','Status','Contig','Start','End','Score','Length']. Entries are reduced to those with `Status` = `Complete`
+        and the `Contig`, `Start` and `End` fields are used to define the regions that should be predominantly single copy.
+        [BUSCOMP](https://github.com/slimsuite/buscomp) v0.10.0 and above will generate a `*.complete.tsv` file that can
+        be used in place of BUSCO results. This can enable rapid re-annotation of BUSCO genes following, for example,
+        vector trimming with [Diploidocus](https://github.com/slimsuite/diploidocus).
+
+        ## Step 3: Single-copy read depth
+
+        DepthKopy uses `samtools mpileup` (or `samtools depth` if `quickdepth=T`) to calculate the per-base read depth
+        and extracts the smoothed modal read depth for all single-copy (`Complete` BUSCO genes) using the `density()`
+        function of R. To avoid a minority of extremely deep-coverage bases disrupting the density profile, the depth
+        range is first limited to the range from zero to 1000, or four time the pure modal read depth if over 1000. If
+        the pure mode is zero coverage, zero is returned. The number of bins for the density function is set to be
+        greater than 5 times the max depth for the calculation.
+        By default, the density bandwidth smoothing parameter is set to `adjust=12`. This can be modified with
+        `depadjust=INT`. The raw and smoothed profiles are output to `*.plots/*.raw.png` `*.plots/*.scdepth.png`
+        to check smoothing if required. Additional checking plots are also output (see Outputs below).
+        The full output of depths per position is output to `$BAM.fastmp` (or `$BAM.fastdep` if `quickdepth=T`). The
+        single-copy is also output to `$BAM.fastmp.scdepth`.
+
+        ## Step 5: Copy Number estimation
+
+        For each region analysed, the same density profile calculation is used to predict the dominant read depth across the
+        region, which is then converted into copy number (CN) by dividing by the single-copy read depth. Confidence intervals
+        are calculated based on random sampling of the observed single copy read depth. (Details to follow: available on request.)
+
+        ## Step 6: Outputs
+
+        Finally, CN and depth statistics are integrated with kmer and within-assembly homology data, and output as a series of
+        plots and tables (below).
+
+
+        # Outputs
+
+        The main DepthKopy outputs are:
+
+        * `*.regcnv.tsv` = CN and depth statistics for different input region datasets.
+        * `*.xlsx` = compiled Excel file of each region file.
+        * `*.log` = DepthKopy log file with key steps and details of any errors or warnings generated.
+        * `*.plots/` = Directory of PNG plots (see below)
+
+        ## Region CN output tables
+
+        The BUSCO input file will get `*.regcnv.tsv` and `*.dupcnv.tsv` copy number prediction tables generated. Other region
+        datasets will have a `*.regcnv.tsv` file. These will have the following fields added:
+
+        * `MeanX` = Mean sequencing depth across region.
+        * `MedX` =  Median sequencing depth across region.
+        * `ModeX` =  Pure modal sequencing depth across region.
+        * `DensX` =  Density-plot adjusted modal sequencing depth across region.
+        * `SelfK` =  Density-plot adjusted modal kmer frequency across region. (In development.)
+        * `HomPC` =  Percentage of region with within-assembly homology identified. (In development.)
+
+
+        ## DepthKopy plots
+
+        DepthKopy will also generate a number of plots of results, which are output in `$BASE.plots/` as PDF and PNG files.
+
+        First, the raw and smoothed read depth profiles will be output to:
+        * `$BASE.plots/$BASE.raw.png` = raw depth profile
+        * `$BASE.plots/$BASE.scdepth.png` = smoothed depth profile with SC depth marked
+
+        In addition, violin plots will be generated for the following `$STAT` values:
+
+        * `$BASE.plots/$BASE.CN.png` = Estimated copy number.
+        * `$BASE.plots/$BASE.MeanX.png` = Mean depth of coverage
+        * `$BASE.plots/$BASE.MedX.png` = Median depth of coverage
+        * `$BASE.plots/$BASE.ModeX.png` = Pure Modal depth of coverage
+        * `$BASE.plots/$BASE.DensX.png` = Smoothed density modal depth of coverage
+
+        If `seqstats=T` then each assembly sequence will also be output in a `Sequences` violin plot for comparison.
+        Each point in the plots is a separate gene or sequence.
+
+        Values for individual genes/sequences are also output as
+        a density scatter plot named `$BASE.plots/$BASE.$REGIONS.$STAT.png`, where
+
+        * `$REGIONS` is the type of region plotted (`BUSCO` complete, `Duplicated`, or assembly `Sequences`).
+        * `$STAT` is the output statistic: `MeanX`, `MedX`, `ModeX` or `DensX`.
 
         '''
         try:### ~ [1] ~ Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###

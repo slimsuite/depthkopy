@@ -1,7 +1,7 @@
 ########################################################
 ### DepthCopy SC depth functions               ~~~~~ ###
-### VERSION: 0.6.3                             ~~~~~ ###
-### LAST EDIT: 23/11/21                        ~~~~~ ###
+### VERSION: 0.7.0                             ~~~~~ ###
+### LAST EDIT: 24/11/21                        ~~~~~ ###
 ### AUTHORS: Richard Edwards 2021              ~~~~~ ###
 ### CONTACT: richard.edwards@unsw.edu.au       ~~~~~ ###
 ########################################################
@@ -25,7 +25,8 @@
 # v0.6.1 : Slightly tidied output. Added some PDF outputs.
 # v0.6.2 : Added fulltable.tsv output.
 # v0.6.3 : Added additional capture of bad regions. Fixed reghead bug.
-version = "v0.6.3"
+# v0.7.0 : Updated to use the depth file to restrict sequences under analysis.
+version = "v0.7.0"
 
 ####################################### ::: USAGE ::: ############################################
 # Example use:
@@ -61,13 +62,15 @@ version = "v0.6.3"
 #!# Consider separating out code and running with source
 #!# Add plotter script/option that can parse and plot the full table? Can file path be parsed from rscript command for source and/or further rscript calls? Could be just a flag?
 #!# Complete documentation of Usage and Outputs.
+#!# Add external setting of settings$seqnames and then filter the depth/kmer lists too.
+#!# Output the regions files to renamed files too if new name is given with name:file.
 
 ####################################### ::: SETUP ::: ############################################
 ### ~ Commandline arguments ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 settings = list(adjust=12,scdepth=0,busco="",depfile="",regfile="",threads=1,
                 winsize=0,winstep=1,debug=FALSE,chromcheck="None",cnmax=4,
                 katfile='None', katself='None', homfile='None',
-                seqstats=FALSE,sigdif=FALSE,
+                seqstats=FALSE,sigdif=FALSE,seqnames=vector(),
                 pngwidth=1200,pngheight=900,pointsize=16,pngdir="pngplots",
                 basefile="depthcopy",
                 gfftype="gene",reghead="SeqName,Start,End",outlog=stdout())
@@ -128,6 +131,8 @@ if(settings$ggstatsplot){
 settings$writexl = "writexl" %in% installed.packages()[,"Package"]
 if(settings$writexl){
   library(writexl)
+}else{
+  logWrite("#XLXS Install writexl package for compiled Excel file output.")
 }
 
 ####################################### ::: FUNCTIONS ::: ############################################
@@ -175,9 +180,12 @@ buscoTable <- function(filename){
     colnames(buscodb) = v3head
   }
   buscodb$Contig = as.character(buscodb$Contig)
-  buscodb = buscodb[buscodb$Status == "Complete",]
-  #logWrite(paste(nrow(buscodb),"Complete BUSCO genes loaded from",filename))
+  buscodb <- buscodb[buscodb$Status == "Complete",]
   logWrite(paste('#BUSCO',nrow(buscodb),"Complete BUSCO genes loaded from",filename))
+  if(length(settings$seqnames) > 0){
+    buscodb <- buscodb %>% filter(Contig %in% settings$seqnames)
+    logWrite(paste('#BUSCO',nrow(buscodb),"Complete BUSCO genes following filtering to",length(settings$seqnames),"sequences."))
+  }
   return(buscodb)
 }
 #i# dupdb = buscoDupTable(filename)
@@ -194,6 +202,10 @@ buscoDupTable <- function(filename){
   buscodb = buscodb[buscodb$Status == "Duplicated",]
   #logWrite(paste(nrow(buscodb),"Duplicated BUSCO genes loaded from",filename))
   logWrite(paste('#BUSCO',nrow(buscodb),"Duplicated BUSCO genes loaded from",filename))
+  if(length(settings$seqnames) > 0){
+    buscodb <- buscodb %>% filter(Contig %in% settings$seqnames)
+    logWrite(paste('#BUSCO',nrow(buscodb),"Duplicated BUSCO genes following filtering to",length(settings$seqnames),"sequences."))
+  }
   return(buscodb)
 }
 
@@ -211,6 +223,10 @@ regionTable <- function(filename,delimit="\t",uniqreg=FALSE){
   }else{
     #logWrite(paste(nrow(regdb),"regions loaded from",filename))
     logWrite(paste('#REGION',nrow(regdb),"regions loaded from",filename))
+  }
+  if(length(settings$seqnames) > 0){
+    regdb <- regdb[regdb[[settings$reghead[1]]] %in% settings$seqnames,]
+    logWrite(paste('#REGION',nrow(regdb),"regions following filtering to",length(settings$seqnames),"sequences."))
   }
   return(regdb)
 }
@@ -241,6 +257,10 @@ gffTable <- function(filename,gfftype="gene"){
   gffdb = gffdb %>% select(SeqName, Source, FType, Start, End, Strand, ID, Attributes)
   #logWrite(paste(nrow(gffdb),"regions loaded from",filename))
   logWrite(paste('#GFF',nrow(gffdb),"GFF filtered regions retained from",filename))
+  if(length(settings$seqnames) > 0){
+    gffdb <- gffdb %>% filter(SeqName %in% settings$seqnames)
+    logWrite(paste('#GFF',nrow(gffdb),"GFF regions following filtering to",length(settings$seqnames),"sequences."))
+  }
   return(gffdb)
 }
 
@@ -609,6 +629,7 @@ logWrite('#RCODE Setup complete.')
 ### ~ Load Data Depth and Kmer data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 #i# 1. Load the depth data list
 deplist = depthList(depfile)
+settings$seqnames = names(deplist)
 
 ## ~ Additional vectors for cross-plotting ~ ##
 #i# katfile=FILE, katself=FILE, homfile=FILE
