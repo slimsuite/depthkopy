@@ -19,8 +19,8 @@
 """
 Module:       DepthKopy
 Description:  Single-copy read-depth and kmer based copy number analysis
-Version:      0.4.0
-Last Edit:    02/12/21
+Version:      1.0.1
+Last Edit:    13/12/21
 Citation:     Chen SH et al. & Edwards RJ (preprint): bioRxiv 2021.06.02.444084 (doi: 10.1101/2021.06.02.444084)
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
@@ -96,6 +96,7 @@ Commandline:
 ### SECTION I: GENERAL SETUP & PROGRAM DETAILS                                                                          #
 #########################################################################################################################
 import os, string, sys, time
+mypath = os.path.abspath(os.path.dirname(os.path.realpath(__file__))) + os.path.sep
 slimsuitepath = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)),'../')) + os.path.sep
 sys.path.append(os.path.join(slimsuitepath,'libraries/'))
 sys.path.append(os.path.join(slimsuitepath,'tools/'))
@@ -114,30 +115,33 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     # 0.3.0 - Added support for multiple regfiles. Added maxcn=INT option. Fixed end of sequence window size.
     # 0.3.1 - Fixed reghead bug.
     # 0.4.0 - Updated to use the seqin file to restrict sequences under analysis from regfile/BUSCO etc. Updated docs.
+    # 1.0.0 - Added over-ride of BUSCO calculation when scdepth=X is provided. First true release. Added to SeqSuite.
+    # 1.0.1 - Added passing on of gfftype=LIST option to Rscript.
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
     '''
     # [Y] : Populate Module Docstring with basic info.
     # [Y] : Populate makeInfo() method with basic info.
-    # [ ] : Add full description of program to module docstring.
+    # [Y] : Add full description of program to module docstring.
     # [Y] : Create initial working version of program.
     # [N] : Add REST outputs to restSetup() and restOutputOrder()
-    # [ ] : Add to SLiMSuite or SeqSuite.
+    # [Y] : Add to SLiMSuite or SeqSuite.
     # [Y] : Add chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
     # [Y] : Add KAT read and self kmers and self-homology depth files that can be generated and added to depthcopy.R.
     # [Y] : Add check for KAT installation.
     # [Y] : Change pngplots/ to $BASEFILE.pngplots/
     # [ ] : Improve software checks and file checks for re-running on pre-generated data without programs installed.
-    # [ ] : Make full run docstring for docHTML.
+    # [Y] : Make full run docstring for docHTML.
     '''
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('DepthKopy', '0.4.0', 'December 2021', '2021')
+    (program, version, last_edit, copy_right) = ('DepthKopy', '1.0.1', 'December 2021', '2021')
     description = 'Single-copy read-depth based copy number analysis'
     author = 'Dr Richard J. Edwards.'
-    comments = ['This program is still in development and has not been published.',rje_obj.zen()]
+    comments = ['Citation: Chen SH et al. & Edwards RJ (preprint): bioRxiv 2021.06.02.444084 (doi: 10.1101/2021.06.02.444084)',
+                'Please raise bugs or questions at https://github.com/slimsuite/depthkopy.',rje_obj.zen()]
     return rje.Info(program,version,last_edit,description,author,time.time(),copy_right,comments)
 #########################################################################################################################
 def cmdHelp(info=None,out=None,cmd_list=[]):   ### Prints *.__doc__ and asks for more sys.argv commands
@@ -593,14 +597,16 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         depfile=FILE [busco=FILE] [scdepth=INT] [regfile=FILE] [reghead=LIST] [gfftype=LIST] [winsize=INT] [winstep=NUM]
         '''
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-            options = ['pngdir={0}.plots'.format(self.baseFile())]
-            for cmd in ['depfile','busco','scdepth','regfile','gfftype','winsize','winstep','adjust','cnmax','basefile',
+            options = ['pngdir={0}.plots'.format(self.baseFile()),'buscocn=FALSE']
+            for cmd in ['depfile','busco','scdepth','regfile','winsize','winstep','adjust','cnmax','basefile',
                         'katfile', 'katself', 'homfile']:
                 val =  self.getData(cmd)
                 if val and val != 'None':
                     options.append('{0}={1}'.format(cmd,val))
             if self.list['ChromCheck']:
                 options.append('chromcheck={0}'.format(','.join(self.list['ChromCheck'])))
+            for lcmd in ['GFFType']:
+                options.append('{0}={1}'.format(lcmd.lower(), ','.join(self.list[lcmd])))
             options.append('reghead={0}'.format(','.join(self.list['CheckFields'])))
             if self.debugging(): options.append('debug=TRUE')
             if self.getBool('SeqStats'): options.append('seqstats=TRUE')
@@ -608,13 +614,17 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
             return optionstr
         except: self.errorLog('%s.callRscript error' % self.prog())
 #########################################################################################################################
+    def rDir(self,rscript='depthcopy.R'):
+        if rje.exists(mypath+rscript): return mypath
+        else: return '%slibraries/r/' % slimsuitepath
+#########################################################################################################################
     def callRscript(self,optionstr=''):  ### Calls the depthcopy.R Rscript and parses output.
         '''
         Calls the depthcopy.R Rscript and parses output.
         >> optionstr:str = String of options to give to depthcopy.R script.
         '''
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-            rdir = '%slibraries/r/' % slimsuitepath
+            rdir = self.rDir()
             if not optionstr: optionstr = self.makeOptionStr()
             ### ~ [2] Run ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             complete = False

@@ -1,7 +1,7 @@
 # DepthKopy: Single-copy read-depth based copy number analysis
 
 ```
-DepthKopy v0.4.0
+DepthKopy v1.0.1
 ```
 
 For a better rendering and navigation of this document, please download and open [`./docs/depthkopy.docs.html`](./docs/depthkopy.docs.html), or visit <https://slimsuite.github.io/depthkopy/>.

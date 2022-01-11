@@ -1,7 +1,7 @@
 ########################################################
 ### DepthCopy SC depth functions               ~~~~~ ###
-### VERSION: 0.7.0                             ~~~~~ ###
-### LAST EDIT: 24/11/21                        ~~~~~ ###
+### VERSION: 0.9.0                             ~~~~~ ###
+### LAST EDIT: 06/01/22                        ~~~~~ ###
 ### AUTHORS: Richard Edwards 2021              ~~~~~ ###
 ### CONTACT: richard.edwards@unsw.edu.au       ~~~~~ ###
 ########################################################
@@ -26,7 +26,10 @@
 # v0.6.2 : Added fulltable.tsv output.
 # v0.6.3 : Added additional capture of bad regions. Fixed reghead bug.
 # v0.7.0 : Updated to use the depth file to restrict sequences under analysis.
-version = "v0.7.0"
+# v0.8.0 : Added some bug fixes for unusual depth profiles or missing BUSCOs. Added buscocn=T/F setting.
+# v0.8.1 : Fixed bug with empty lists crashing script.
+# v0.9.0 : Fixed issues of reverse strand regfile data (Start > End) and added basefile to regfile output.
+version = "v0.9.0"
 
 ####################################### ::: USAGE ::: ############################################
 # Example use:
@@ -43,6 +46,8 @@ version = "v0.7.0"
 # : homfile=FILE = assembly self-mapping homology depth file for plotting 
 # : pngdir=PATH = output path for PNG graphics
 # : cnmax=INT = maximum CN value for output graphics
+# : scdepth=NUM = Single copy read depth to use in place of BUSCO-derived depth
+# : buscocn=T/F = Whether to use the BUSCO-derived CN setting if possible to calculate.
 
 #i# Python code:
 # slimsuitepath = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)),'../')) + os.path.sep
@@ -67,13 +72,14 @@ version = "v0.7.0"
 
 ####################################### ::: SETUP ::: ############################################
 ### ~ Commandline arguments ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-settings = list(adjust=12,scdepth=0,busco="",depfile="",regfile="",threads=1,
+defaults = list(adjust=12,scdepth=0,busco="",depfile="",regfile="",threads=1,
                 winsize=0,winstep=1,debug=FALSE,chromcheck="None",cnmax=4,
                 katfile='None', katself='None', homfile='None',
                 seqstats=FALSE,sigdif=FALSE,seqnames=vector(),
                 pngwidth=1200,pngheight=900,pointsize=16,pngdir="pngplots",
-                basefile="depthcopy",
+                basefile="depthcopy",buscocn=TRUE,
                 gfftype="gene",reghead="SeqName,Start,End",outlog=stdout())
+settings <- defaults
 argvec = commandArgs(TRUE)
 if(FALSE){
   argvec = strsplit("winsize=100000 depfile=Mqui_v1.fastmp regfile=Mqui_v1.easy.lca_genes.gff busco=full_table_Mqui_v1.tsv basefile=test chromcheck=1e6 chromcheck=0 katfile=Mqui_v1.kat-hifi-counts.cvg katself=Mqui_v1.kat-counts.cvg homfile=Mqui_v1.self.fasthom",split=" ")[[1]]
@@ -92,10 +98,15 @@ for(cmd in c("adjust","pngwidth","pngheight","pointsize","threads","winsize","cn
 for(cmd in c("scdepth","winstep")){
   settings[[cmd]] = as.numeric(settings[[cmd]])
 }
+if(settings$gfftype == ""){ settings$gfftype <- "*" }
 for(cmd in c("reghead","gfftype","chromcheck")){
-  settings[[cmd]] = strsplit(settings[[cmd]],',',TRUE)[[1]]
+  if(length(settings[[cmd]]) > 0){
+    settings[[cmd]] = strsplit(settings[[cmd]],',',TRUE)[[1]]
+  }else{
+    settings[[cmd]] <- defaults[[cmd]]
+  }
 }
-for(cmd in c("debug","seqstats","sigdif")){
+for(cmd in c("debug","seqstats","sigdif","buscocn")){
   settings[[cmd]] = as.logical(settings[[cmd]])
 }
 
@@ -148,6 +159,7 @@ depthList <- function(filename){
   indata = readLines(filename)
   i = 1
   logWrite(paste0("Loading depth data from ",filename,"..."))
+  cat("", file = stderr())
   while(i < length(indata)){
     cat(".", file = stderr())
     seqname = indata[i]
@@ -248,13 +260,17 @@ gffTable <- function(filename,gfftype="gene"){
   logWrite(paste('#GFF',nrow(gffdb),"GFF features loaded from",filename))
   colnames(gffdb) = c('SeqName', 'Source', 'FType', 'Start', 'End', 'Score', 'Strand', 'Phase', 'Attributes')
   if(! "*" %in% gfftype){
-    gffdb = gffdb %>% filter(FType==gfftype)
+    gffdb = gffdb %>% filter(FType %in% gfftype)
+  }
+  logWrite(paste('#GFF',nrow(gffdb),"GFF features retained post-filtering by gfftype:",paste(gfftype,collapse=", ")))
+  if(nrow(gffdb)<1){
+    return(gffdb)
   }
   gffdb$ID = ""
+  gffdb = gffdb %>% select(SeqName, Source, FType, Start, End, Strand, ID, Attributes)
   for(i in 1:nrow(gffdb)){
     gffdb$ID[i] = gffIDFromAtt(gffdb$Attributes[i]) 
   }
-  gffdb = gffdb %>% select(SeqName, Source, FType, Start, End, Strand, ID, Attributes)
   #logWrite(paste(nrow(gffdb),"regions loaded from",filename))
   logWrite(paste('#GFF',nrow(gffdb),"GFF filtered regions retained from",filename))
   if(length(settings$seqnames) > 0){
@@ -327,7 +343,7 @@ densModeZoom <- function(depvec,adjust=16,plotbase=NA,plotmain=NA){
     return(0)
   }
   centre = getmode(depvec)
-  if(centre <= 0){
+  if(centre <= 1){
     if(settings$debug){
       logWrite("Centre <= 0")
     }
@@ -391,6 +407,14 @@ buscoDepData <- function(buscofile,deplist){
   cat("\n", file = stderr())
   writeLines("Calculating BUSCO SC Depth...")
   print(summary(depvec))
+  #i# Adjust when excess zero-coverage regions are messing things up
+  depvec = depvec[!is.na(depvec)]
+  centre = getmode(depvec)
+  if(centre < 1){
+    logWrite("#WARN Warning: pure BUSCO modal depth <1X - trimming bases <1X coverage")
+    depvec = depvec[depvec >=1 ]
+  }
+  #i# Calculate SCDepth from BUSCO genes
   scdepth = densModeZoom(depvec,adjust=settings$adjust,plotbase=settings$basefile,plotmain="BUSCO")
   #!# Generate PNG BUSCO depth profile
   logWrite(paste("#SCDPETH BUSCO SC Depth:",round(scdepth,2)))
@@ -399,6 +423,14 @@ buscoDepData <- function(buscofile,deplist){
     outfile = paste(settings$depfile,"scdepth",sep=".",collapse=".")
     logWrite(paste(nrow(buscodb),"BUSCO Complete SC Depth output to",outfile))
     write(scdepth,outfile)
+    if(settings$scdepth > 0){
+     if(settings$buscocn){
+        logWrite(paste("#SCDPETH Over-riding scdepth=NUM SC Depth:",round(scdepth,2)))
+     }else{
+      scdepth = settings$scdepth
+      logWrite(paste("#SCDPETH Using scdepth=NUM SC Depth:",round(scdepth,2)))
+     }
+    }
   }else{
     logWrite(paste(nrow(buscodb),"BUSCO Complete SC Depth calculation failed!"))
     if(settings$scdepth > 0){
@@ -418,6 +450,10 @@ buscoDepCalc <- function(buscodat){
   scdepth = buscodat$scdepth
   buscodb = buscodat$buscodb
   buscovec = buscodat$buscovec
+  if(nrow(buscodb)<1){
+    logWrite('Zero BUSCO rows: skipping Depth Calculation')
+    return( list(depvec=depvec, buscodb=buscodb, buscovec=buscovec, scdepth=scdepth) )
+  }
   # Setup new fields. Some of these are just for testing
   buscodb$MeanX = 0
   buscodb$MedX = 0  
@@ -508,6 +544,10 @@ depVector <- function(seqname,posi,posj,deplist){
   return(deplist[[seqname]][posi:posj])
 }
 regCN <- function(regdb,buscoMean=0,buscoSD=0){
+  if(nrow(regdb)<1){
+    logWrite('Zero rows: skipping')
+    return(regdb)
+   }
   regdb$MeanX = 0
   regdb$MedX = 0  
   regdb$ModeX = 0  
@@ -523,6 +563,10 @@ regCN <- function(regdb,buscoMean=0,buscoSD=0){
     seqname = regdb[i,reghead[1]]
     seqi = regdb[i,reghead[2]]
     seqj = regdb[i,reghead[3]]
+    if(seqi > seqj){
+      seqi = regdb[i,reghead[3]]
+      seqj = regdb[i,reghead[2]]
+    }
     seqdep = depVector(seqname,seqi,seqj,deplist)
     if(length(seqdep) >= 1){
       regdb$MeanX[i] = mean(seqdep)
@@ -546,6 +590,7 @@ regCN <- function(regdb,buscoMean=0,buscoSD=0){
   #regdb$HomX = NA
   regdb$HomPC = NA
   logWrite("Calculating region kmers/homology...")
+  cat("", file = stderr())
   # Calculate region stats
   prevname = ""
   for(i in 1:nrow(regdb)){
@@ -713,8 +758,12 @@ if(file.exists(buscofile)){
   ### ~ Save CN table ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
   #i# Output table to with CN data
   outfile = paste(settings$basefile,"busco.dupcnv.tsv",sep=".",collapse=".")
-  logWrite(paste("#SAVE",nrow(dupdb),"Duplicated BUSCO genes output to",outfile))
-  write.table(tidyTable(dupdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
+  if(nrow(dupdb) > 0){
+    logWrite(paste("#SAVE",nrow(dupdb),"Duplicated BUSCO genes output to",outfile))
+    write.table(tidyTable(dupdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
+  }else{
+    logWrite(paste("#SAVE","No Duplicated BUSCO genes.",outfile,"not generated."))
+  }
 }
 
 ### ~ Calculate Region CN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -744,7 +793,7 @@ for(regfile in strsplit(settings$regfile,",",TRUE)[[1]]){
 	  #i# Output table to with CN data
 	  outfile = basename(regfile)
 	  outvec = strsplit(outfile,".",TRUE)[[1]]
-	  outfile = paste(c(outvec[1:length(outvec)-1],"regcnv.tsv"),sep=".",collapse=".")
+	  outfile = paste(c(settings$basefile,outvec[1:length(outvec)-1],"regcnv.tsv"),sep=".",collapse=".")
 	  logWrite(paste("#SAVE",nrow(regdb),"CN predictions output to",outfile))
 	  write.table(tidyTable(regdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
 	  reglist[[regname]] = regdb
@@ -838,65 +887,6 @@ if(settings$winsize>0){
 }
 logWrite(paste("CN groups made:",paste(names(reglist),collapse=", ")))
 
-### ~ Generate Plot database ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-#i# Merge buscodb and regdb with Dataset field
-# plotdb = tibble(Dataset=c(),SeqName=c(),Start=c(),End=c(),MeanX=c(),MedX=c(),ModeX=c(),DensX=c(),CN=c(),DensK=c(),SelfK=c(),HomPC=c())
-# if(file.exists(regfile)){
-#   plotdb <- bind_rows(plotdb, 
-#                       regdb %>% rename(SeqName=reghead[1],Start=reghead[2],End=reghead[3]) %>%
-#                         mutate(Dataset="Regions") %>%
-#                         select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-# }
-# if(file.exists(buscofile)){
-#   plotdb <- bind_rows(plotdb, 
-#                       buscodb %>% rename(SeqName=Contig) %>%
-#                         mutate(Dataset="BUSCO") %>%
-#                         select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-#   plotdb <- bind_rows(plotdb, 
-#                       dupdb %>% rename(SeqName=Contig) %>%
-#                         mutate(Dataset="Duplicated") %>%
-#                         select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-# }
-# if(settings$seqstats){
-#   plotdb <- bind_rows(plotdb, 
-#                       scaffdb %>% 
-#                         mutate(Dataset="Sequences") %>%
-#                         select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-# }
-# #i# Window analysis, incorporating chromcheck
-# if(settings$winsize>0){
-#   #i# Setup chromcheck
-#   chromcheck = settings$chromcheck
-#   chromsize = as.integer(chromcheck[1])
-#   if(! chromcheck[1] %in% windb$SeqName & ! is.na(chromsize) & chromsize > 0 & max(windb$End) >= chromsize){
-#     #i# Set chromosome check to those sequences exceeding length threshold
-#     logWrite(paste("Chromosome check:",chromsize,"bp+"))
-#     chromcheck = unique(windb[windb$End >= chromsize,]$SeqName)
-#   }
-#   #i# Chromcheck subsets
-#   if(length(chromcheck) > 0 & chromcheck[1] %in% windb$SeqName){
-#     logWrite(paste("Chromosome check:",length(chromcheck),"sequences"))
-#     for(chrom in chromcheck){
-#       plotdb <- bind_rows(plotdb, 
-#                           windb %>% filter(SeqName==chrom) %>%
-#                             rename(SeqName=reghead[1],Start=reghead[2],End=reghead[3]) %>%
-#                             mutate(Dataset=chrom) %>%
-#                             select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-#     }
-#     plotdb <- bind_rows(plotdb, 
-#                         windb %>% filter(SeqName!=chromcheck) %>%
-#                           rename(SeqName=reghead[1],Start=reghead[2],End=reghead[3]) %>%
-#                           mutate(Dataset="Other") %>%
-#                           select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-#   }else{
-#     #i# Full Windows data
-#     plotdb <- bind_rows(plotdb, 
-#                         windb %>% rename(SeqName=reghead[1],Start=reghead[2],End=reghead[3]) %>%
-#                           mutate(Dataset="Windows") %>%
-#                           select(Dataset,SeqName,Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC))
-#   }
-# }
-
 ### ~ Save to Excel ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 if(settings$writexl){
   outfile = paste0(settings$basefile,".xlsx")
@@ -911,7 +901,8 @@ if(settings$writexl){
 reghead <- settings$reghead
 newplotdb = tibble(Dataset=c(),SeqName=c(),Start=c(),End=c(),MeanX=c(),MedX=c(),ModeX=c(),DensX=c(),CN=c(),DensK=c(),SelfK=c(),HomPC=c())
 for(rname in names(reglist)){
-	adddb <- reglist[[rname]] 
+	adddb <- reglist[[rname]]
+    if(nrow(adddb) < 1){ next }
 	if(rname %in% c("BUSCO","Duplicated")){
 		adddb <- adddb %>% rename(SeqName=Contig)
 	}
