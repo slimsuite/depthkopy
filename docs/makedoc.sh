@@ -1,12 +1,12 @@
 export RSTUDIO_PANDOC=/Applications/RStudio.app/Contents/MacOS/pandoc
 
-python ../code/depthkopy.py dochtml newlog
+python3 ../code/depthkopy.py i=-1 dochtml newlog
 
-python ../code/depthkopy.py --description | sed 's/^/# /' > ../DepthKopy.md
+python3 ../code/depthkopy.py --description | sed 's/^/# /' > ../DepthKopy.md
 echo >> ../DepthKopy.md
 
 echo '```' >> ../DepthKopy.md
-python ../code/depthkopy.py --details >> ../DepthKopy.md
+python3 ../code/depthkopy.py --details >> ../DepthKopy.md
 echo '```' >> ../DepthKopy.md
 echo >> ../DepthKopy.md
 echo 'For a better rendering and navigation of this document, please download and open [`./docs/depthkopy.docs.html`](./docs/depthkopy.docs.html), or visit <https://slimsuite.github.io/depthkopy/>.' >> ../DepthKopy.md

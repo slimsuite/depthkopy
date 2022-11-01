@@ -1,7 +1,7 @@
 # DepthKopy: Single-copy read-depth based copy number analysis
 
 ```
-DepthKopy v1.0.2
+DepthKopy v1.1.0
 ```
 
 For a better rendering and navigation of this document, please download and open [`./docs/depthkopy.docs.html`](./docs/depthkopy.docs.html), or visit <https://slimsuite.github.io/depthkopy/>.
@@ -225,6 +225,15 @@ a density scatter plot named `$BASE.plots/$BASE.$REGIONS.$STAT.png`, where
 
 * `$REGIONS` is the type of region plotted (`BUSCO` complete, `Duplicated`, or assembly `Sequences`).
 * `$STAT` is the output statistic: `MeanX`, `MedX`, `ModeX` or `DensX`.
+
+### Re-running failed plots
+
+If DepthKopy fails to run to completion, or you wish to change axes limits and/or edit out some of the features, you
+can also generate plots from the `*.xlsx` output file using the `depthcopyplot.R` file:
+
+```
+Rscript $CODEPATH/depthcopyplot.R basefile=$BASE [scdepth=NUM] [xlsx=FILE] [xsheets=LIST] [reghead=LIST] [pngdir=PATH] [cnmax=INT] [sigdif=T/F] [rdir=PATH]
+```
 
 
 
