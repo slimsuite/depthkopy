@@ -341,7 +341,19 @@ write.table(tidyTable(plotdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
 
 #i# Generate PNG of violin plots
 plotfields = c("MeanX","MedX","ModeX","DensX","CN")
+for(kfield in plotfields){
+  nax <- sum(is.na(plotdb[[kfield]]))
+  if(nax > 0){
+    plotdb[[kfield]][is.na(plotdb[[kfield]])] <- 0
+    logWrite(paste("#WARN",nax,kfield,"NA entries replaced with 0."))
+  }
+}
 for(kfield in c("DensK","SelfK","HomPC")){
+  nax <- sum(is.na(plotdb[[kfield]]))
+  if(nax > 0){
+    plotdb[[kfield]][is.na(plotdb[[kfield]])] <- 0
+    logWrite(paste("#WARN",nax,kfield,"NA entries replaced with 0."))
+  }
   if(max(plotdb[[kfield]]) > 0){
     plotfields <- c(plotfields, kfield)
   }

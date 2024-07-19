@@ -19,8 +19,8 @@
 """
 Module:       DepthKopy
 Description:  Single-copy read-depth and kmer based copy number analysis
-Version:      1.1.0
-Last Edit:    01/11/22
+Version:      1.5.0
+Last Edit:    17/07/24
 Citation:     Chen SH et al. & Edwards RJ (2022): Mol. Ecol. Res. (doi: 10.1111/1755-0998.13574)
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
@@ -66,21 +66,28 @@ Commandline:
     basefile=FILE   : Root of output file names [diploidocus or $SEQIN basefile]
     scdepth=NUM     : Single copy ("diploid") read depth. If zero, will use SC BUSCO mode [0]
     bam=FILE        : BAM file of long reads mapped onto assembly [$BASEFILE.bam]
+    bamcsi=T/F      : Use CSI indexing for BAM files, not BAI (needed for v long scaffolds) [False]
     reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
     readtype=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
     dochtml=T/F     : Generate HTML DepthKopy documentation (*.docs.html) instead of main run [False]
     ### ~ Depth and Copy Number options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
     busco=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
     quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
+    depchunk=INT    : Chunk input into minimum of INT bp chunks for temp depth calculation [1e6]
+    deponly=T/F     : Cease execution following checking/creating BAM and fastdep/fastmp files [False]
     depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
     homfile=FILE    : Precomputed homology depth file (*.fasthom) to use (false=off) [None]
     regfile=CDICT   : List of Name:Files (or single FILE) of SeqName, Start, End positions (or GFF) for CN checking [None]
     reghead=LIST    : Fields in checkpos file to give Locus, Start and End for checking (also checkfields=LIST) [SeqName,Start,End]
-    gfftype=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
+    gfftype=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene,rRNA']
+    collapse=LIST   : List of fields for regfiles on which to collapse CN ["Family"]
     winsize=INT     : Generate additional window-based depth and CN profiles of INT bp (0 to switch off) [100000]
     winstep=NUM     : Generate window every NUM bp (or fraction of winsize=INT if <=1) [1]
     chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
     seqstats=T/F    : Whether to output CN and depth data for full sequences as well as BUSCO genes [True]
+    ### ~ Rscript options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+    outdir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./]
+    pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
     ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
     kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
     kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
@@ -90,6 +97,7 @@ Commandline:
     killforks=X     : Number of seconds of no activity before killing all remaining forks. [36000]
     forksleep=X     : Sleep time (seconds) between cycles of forking out more process [0]
     tmpdir=PATH     : Path for temporary output files during forking [./tmpdir/]
+    memsaver=T/F    : Whether to disable threading for the R script [False]
     ### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 """
 #########################################################################################################################
@@ -122,6 +130,12 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     # 1.0.4 : Fixed bug with missing BUSCOs.
     # 1.0.5 : Fixed problem with reghead and updated checkfields to use reghead=LIST too.
     # 1.1.0 : Added depthcopyplot.R for (re)plotting data from XLSX output.
+    # 1.2.0 : Added Duplicated BUSCO rating. Fixed problem with reading in CSV regfile data.
+    # 1.3.0 : Modified the font size and mean box labels for the default plots and added output options.
+    # 1.4.0 : Added bug fixes and improved tmp file usage for *.fastmp generation.
+    # 1.4.1 : Added depchunk=INT : Chunk input into minimum of INT bp chunks for temp depth calculation [1e6]
+    # 1.4.1 : Added collapse=LIST : List of fields for regfiles on which to collapse CN ["Family"]
+    # 1.5.0 : Added multithreading to R script. Added rDNA parsing to defaults.
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
@@ -139,11 +153,15 @@ def todo():     ### Major Functionality to Add - only a method for PythonWin col
     # [ ] : Improve software checks and file checks for re-running on pre-generated data without programs installed.
     # [Y] : Make full run docstring for docHTML.
     # [ ] : Make program generate output from XLXS file if found and force=F.
+    # [Y] : Add BuscoDup report output.
+    # [ ] : Add chrom=LIST setting that will divide windows (and contigs?) between chrom and unplaced.
+    # [ ] : Add contigs=T setting that will check/generate contigs table and then add contigs to regfile list.
+    # [ ] : Add description of the region collapse functions.
     '''
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('DepthKopy', '1.1.0', 'November 2022', '2021')
+    (program, version, last_edit, copy_right) = ('DepthKopy', '1.5.0', 'July 2024', '2021')
     description = 'Single-copy read-depth based copy number analysis'
     author = 'Dr Richard J. Edwards.'
     comments = ['Citation: Chen SH et al. & Edwards RJ (2022): Mol. Ecol. Res. (doi: 10.1111/1755-0998.13574)',
@@ -209,17 +227,20 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
     - BAM=FILE        : BAM file of reads mapped onto assembly [$BASEFILE.bam]
     - BUSCO=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
     - HomFile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
+    - OutDir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./]
     - PAF=FILE        : PAF file of reads mapped onto assembly [$BASEFILE.paf]
     - RegFile=FILE    : File of SeqName, Start, End positions (or GFF) for read coverage checking [None]
     - SeqIn=FILE      : Input sequence assembly (sortnr/diphap modes) []
     - TmpDir=PATH     : Path for temporary output files during forking (not all modes) [./tmpdir/]
 
     Bool:boolean
+    - DepOnly=T/F     : Cease execution following checking/creating BAM and fastdep/fastmp files [False]
     - KmerSelf=T/F    : Whether to perform additional assembly kmer analysis [True]
     - QuickDepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
 
     Int:integer
     - DepAdjust=INT   : Advanced R density bandwidth adjustment parameter [8]
+    - PointSize=INT   : Rescale the font size for the DepthKopy plots [24]
     - WinSize=INT     : Generate additional window-based depth and CN profiles of INT bp (0 to switch off) [100000]
 
     Num:float
@@ -230,6 +251,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
     List:list
     - CheckFields=LIST: Fields in checkpos file to give Locus, Start and End for checking [SeqName,Start,End]
     - ChromCheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
+    - Collapse=LIST   : List of fields for regfiles on which to collapse CN ["Family"]
     - GFFType=LIST    : Optional feature types to use if performing regcheck on GFF file (e.g. gene) ['gene']
     - Reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
     - ReadType=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
@@ -245,12 +267,12 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
     def _setAttributes(self):   ### Sets Attributes of Object
         '''Sets Attributes of Object.'''
         ### ~ Basics ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-        self.strlist = ['HomFile']
-        self.boollist = ['KmerSelf','DocHTML']
-        self.intlist = ['WinSize']
+        self.strlist = ['HomFile','OutDir']
+        self.boollist = ['DepOnly','KmerSelf','DocHTML']
+        self.intlist = ['PointSize','WinSize']
         self.numlist = ['WinStep']
         self.filelist = []
-        self.listlist = ['ChromCheck']
+        self.listlist = ['ChromCheck','Collapse']
         self.dictlist = []
         self.objlist = []
         ### ~ Defaults ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -259,8 +281,9 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         self._setKatAttributes()        # See rje_kat
         self.setStr({})
         self.setBool({'KmerSelf':True,'SeqStats':True})
-        self.setInt({'WinSize':100000})
+        self.setInt({'PointSize':24,'WinSize':100000})
         self.setNum({'WinStep':1})
+        self.list['Collapse'] = ['Family']
         ### ~ Other Attributes ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
         self._setForkAttributes()   # Delete if no forking
 #########################################################################################################################
@@ -278,15 +301,15 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
                 ### Class Options (No need for arg if arg = att.lower()) ### 
                 #self._cmdRead(cmd,type='str',att='Att',arg='Cmd')  # No need for arg if arg = att.lower()
                 #self._cmdReadList(cmd,'str',['Att'])   # Normal strings
-                #self._cmdReadList(cmd,'path',['Att'])  # String representing directory path 
+                self._cmdReadList(cmd,'path',['OutDir'])  # String representing directory path 
                 self._cmdReadList(cmd,'file',['HomFile'])  # String representing file path
                 #self._cmdReadList(cmd,'date',['Att'])  # String representing date YYYY-MM-DD
-                self._cmdReadList(cmd,'bool',['KmerSelf','DocHTML'])  # True/False Booleans
-                self._cmdReadList(cmd,'int',['WinSize'])   # Integers
+                self._cmdReadList(cmd,'bool',['DepOnly','KmerSelf','DocHTML'])  # True/False Booleans
+                self._cmdReadList(cmd,'int',['PointSize','WinSize'])   # Integers
                 self._cmdReadList(cmd,'float',['WinStep']) # Floats
                 #self._cmdReadList(cmd,'min',['Att'])   # Integer value part of min,max command
                 #self._cmdReadList(cmd,'max',['Att'])   # Integer value part of min,max command
-                self._cmdReadList(cmd,'list',['ChromCheck'])  # List of strings (split on commas or file lines)
+                self._cmdReadList(cmd,'list',['ChromCheck','Collapse'])  # List of strings (split on commas or file lines)
                 #self._cmdReadList(cmd,'clist',['Att']) # Comma separated list as a *string* (self.str)
                 #self._cmdReadList(cmd,'glist',['Att']) # List of files using wildcards and glob
                 #self._cmdReadList(cmd,'cdict',['Att']) # Splits comma separated X:Y pairs into dictionary
@@ -385,12 +408,15 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         basefile=FILE   : Root of output file names [diploidocus or $SEQIN basefile]
         scdepth=NUM     : Single copy ("diploid") read depth. If zero, will use SC BUSCO mode [0]
         bam=FILE        : BAM file of long reads mapped onto assembly [$BASEFILE.bam]
+        bamcsi=T/F      : Use CSI indexing for BAM files, not BAI (needed for v long scaffolds) [False]
         reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
         readtype=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
         dochtml=T/F     : Generate HTML DepthKopy documentation (*.docs.html) instead of main run [False]
         ### ~ Depth and Copy Number options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
         busco=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
         quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
+        depchunk=INT    : Chunk input into minimum of INT bp chunks for temp depth calculation [1e6]
+        deponly=T/F     : Cease execution following checking/creating BAM and fastdep/fastmp files [False]
         depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
         homfile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
         regfile=CDICT   : List of Name:Files (or single FILE) of SeqName, Start, End positions (or GFF) for CN checking [None]
@@ -400,6 +426,9 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         winstep=NUM     : Generate window every NUM bp (or fraction of winsize=INT if <=1) [1]
         chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
         seqstats=T/F    : Whether to output CN and depth data for full sequences as well as BUSCO genes [True]
+        ### ~ Rscript options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+        outdir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./]
+        pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
         ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
         kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
         kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
@@ -451,17 +480,27 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         range is first limited to the range from zero to 1000, or four time the pure modal read depth if over 1000. If
         the pure mode is zero coverage, zero is returned. The number of bins for the density function is set to be
         greater than 5 times the max depth for the calculation.
+
         By default, the density bandwidth smoothing parameter is set to `adjust=12`. This can be modified with
         `depadjust=INT`. The raw and smoothed profiles are output to `*.plots/*.raw.png` `*.plots/*.scdepth.png`
         to check smoothing if required. Additional checking plots are also output (see Outputs below).
+
         The full output of depths per position is output to `$BAM.fastmp` (or `$BAM.fastdep` if `quickdepth=T`). The
-        single-copy is also output to `$BAM.fastmp.scdepth`.
+        single-copy is also output to `$BAM.fastmp.scdepth`.  By default, generation
+        of the fastdep/fastmp data is performed by chunking up the assembly and creating temporary files in parallel
+        (`tmpdir=PATH`). Sequences are batched in order such that each batch meets the minimum size criterion set by
+        `depchunk=INT` (default 1Mbp). If `depchunk=0` then each sequence will be processed individually. This is not
+        recommended for large, highly fragmented genomes. Unless `dev=T` or `debug=T`, the temporary files will be
+        deleted once the final file is made. If DepthSizer crashed during the generation of the file, it should be
+        possible to re-run and it will re-use existing temporary files.
 
         ## Step 5: Copy Number estimation
 
         For each region analysed, the same density profile calculation is used to predict the dominant read depth across the
         region, which is then converted into copy number (CN) by dividing by the single-copy read depth. Confidence intervals
         are calculated based on random sampling of the observed single copy read depth. (Details to follow: available on request.)
+        By default, the R script will parallelise this using the number of threads set with `forks=INT`. If this causes
+        memory issues, it can be forced to run with a single thread using `memsaver=T`.
 
         ## Step 6: Outputs
 
@@ -556,6 +595,9 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
             depfile = self.getFastDep()         # This will generate the BAM file if needed
             if not rje.exists(depfile): raise IOError('Failed to create depth file')
             self.debug(depfile)
+            if self.getBool('DepOnly'):
+                self.printLog('#EXIT','Terminating after fastdep creation (deponly=T).')
+                return False
             ## ~ [1b] Generate homology BAM and depth files ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ##
             homfile = self.homFile()
             if homfile:
@@ -619,15 +661,22 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             options = ['pngdir={0}.plots'.format(self.baseFile()),'buscocn=FALSE']
             for cmd in ['depfile','busco','scdepth','regfile','winsize','winstep','adjust','cnmax','basefile',
-                        'katfile', 'katself', 'homfile']:
+                        'katfile', 'katself', 'homfile','outdir','pointsize']:
                 val =  self.getData(cmd)
                 if val and val != 'None':
                     options.append('{0}={1}'.format(cmd,val))
             if self.list['ChromCheck']:
                 options.append('chromcheck={0}'.format(','.join(self.list['ChromCheck'])))
-            for lcmd in ['GFFType']:
+            for lcmd in ['GFFType','Collapse']:
                 options.append('{0}={1}'.format(lcmd.lower(), ','.join(self.list[lcmd])))
             options.append('reghead={0}'.format(','.join(self.list['CheckFields'])))
+            if self.getBool('MemSaver'):
+                self.printLog('#MEM','MemSaver=T: setting threads=-1 for depthcopy.R')
+                options.append('threads=-1')
+            elif self.threads() < 2:
+                options.append('threads=-1')
+            else:
+                options.append('threads={0}'.format(self.threads()))
             if self.debugging(): options.append('debug=TRUE')
             if self.getBool('SeqStats'): options.append('seqstats=TRUE')
             optionstr = ' '.join(options)

@@ -1,7 +1,7 @@
 # DepthKopy: Single-copy read-depth based copy number analysis
 
 ```
-DepthKopy v1.1.0
+DepthKopy v1.5.0
 ```
 
 For a better rendering and navigation of this document, please download and open [`./docs/depthkopy.docs.html`](./docs/depthkopy.docs.html), or visit <https://slimsuite.github.io/depthkopy/>.
@@ -95,12 +95,15 @@ seqin=FILE      : Input sequence assembly. (Must be *.fa or *.fasta for kmerself
 basefile=FILE   : Root of output file names [diploidocus or $SEQIN basefile]
 scdepth=NUM     : Single copy ("diploid") read depth. If zero, will use SC BUSCO mode [0]
 bam=FILE        : BAM file of long reads mapped onto assembly [$BASEFILE.bam]
+bamcsi=T/F      : Use CSI indexing for BAM files, not BAI (needed for v long scaffolds) [False]
 reads=FILELIST  : List of fasta/fastq files containing reads. Wildcard allowed. Can be gzipped. []
 readtype=LIST   : List of ont/pb/hifi file types matching reads for minimap2 mapping [ont]
 dochtml=T/F     : Generate HTML DepthKopy documentation (*.docs.html) instead of main run [False]
 ### ~ Depth and Copy Number options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 busco=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
 quickdepth=T/F  : Whether to use samtools depth in place of mpileup (quicker but underestimates?) [False]
+depchunk=INT    : Chunk input into minimum of INT bp chunks for temp depth calculation [1e6]
+deponly=T/F     : Cease execution following checking/creating BAM and fastdep/fastmp files [False]
 depfile=FILE    : Precomputed depth file (*.fastdep or *.fastmp) to use [None]
 homfile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
 regfile=CDICT   : List of Name:Files (or single FILE) of SeqName, Start, End positions (or GFF) for CN checking [None]
@@ -110,6 +113,9 @@ winsize=INT     : Generate additional window-based depth and CN profiles of INT 
 winstep=NUM     : Generate window every NUM bp (or fraction of winsize=INT if <=1) [1]
 chromcheck=LIST : Output separate window analysis violin plots for listed sequences (or min size) + 'Other' []
 seqstats=T/F    : Whether to output CN and depth data for full sequences as well as BUSCO genes [True]
+### ~ Rscript options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+outdir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./]
+pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
 ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
 kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
@@ -161,17 +167,27 @@ function of R. To avoid a minority of extremely deep-coverage bases disrupting t
 range is first limited to the range from zero to 1000, or four time the pure modal read depth if over 1000. If
 the pure mode is zero coverage, zero is returned. The number of bins for the density function is set to be
 greater than 5 times the max depth for the calculation.
+
 By default, the density bandwidth smoothing parameter is set to `adjust=12`. This can be modified with
 `depadjust=INT`. The raw and smoothed profiles are output to `*.plots/*.raw.png` `*.plots/*.scdepth.png`
 to check smoothing if required. Additional checking plots are also output (see Outputs below).
+
 The full output of depths per position is output to `$BAM.fastmp` (or `$BAM.fastdep` if `quickdepth=T`). The
-single-copy is also output to `$BAM.fastmp.scdepth`.
+single-copy is also output to `$BAM.fastmp.scdepth`.  By default, generation
+of the fastdep/fastmp data is performed by chunking up the assembly and creating temporary files in parallel
+(`tmpdir=PATH`). Sequences are batched in order such that each batch meets the minimum size criterion set by
+`depchunk=INT` (default 1Mbp). If `depchunk=0` then each sequence will be processed individually. This is not
+recommended for large, highly fragmented genomes. Unless `dev=T` or `debug=T`, the temporary files will be
+deleted once the final file is made. If DepthSizer crashed during the generation of the file, it should be
+possible to re-run and it will re-use existing temporary files.
 
 ## Step 5: Copy Number estimation
 
 For each region analysed, the same density profile calculation is used to predict the dominant read depth across the
 region, which is then converted into copy number (CN) by dividing by the single-copy read depth. Confidence intervals
 are calculated based on random sampling of the observed single copy read depth. (Details to follow: available on request.)
+By default, the R script will parallelise this using the number of threads set with `forks=INT`. If this causes
+memory issues, it can be forced to run with a single thread using `memsaver=T`.
 
 ## Step 6: Outputs
 
@@ -238,4 +254,4 @@ Rscript $CODEPATH/depthcopyplot.R basefile=$BASE [scdepth=NUM] [xlsx=FILE] [xshe
 
 
 <br>
-<small>&copy; 2021 Richard Edwards | richard.edwards@unsw.edu.au</small>
+<small>&copy; 2023 Richard Edwards | rich.edwards@uwa.edu.au</small>

@@ -1,7 +1,7 @@
 ########################################################
 ### DepthCopy SC depth functions               ~~~~~ ###
-### VERSION: 1.0.5                             ~~~~~ ###
-### LAST EDIT: 27/06/22                        ~~~~~ ###
+### VERSION: 1.5.0                             ~~~~~ ###
+### LAST EDIT: 19/07/24                        ~~~~~ ###
 ### AUTHORS: Richard Edwards 2021              ~~~~~ ###
 ### CONTACT: richard.edwards@unsw.edu.au       ~~~~~ ###
 ########################################################
@@ -35,7 +35,15 @@
 # v1.0.3 : Fixed problem with only a single density point.
 # v1.0.4 : Added catching of missing BUSCO file if scdepth not given.
 # v1.0.5 : Added some additional bug catching for bad region file headers.
-version = "v1.0.5"
+# v1.1.0 : Fixed a problem with lack of Duplicated BUSCOs. Added fragmented=T option. Fixed BUSCO header issue.
+# v1.1.1 : Added CSV and TXT reading for regfile.
+# v1.2.0 : Added Duplicated BUSCO rating.
+# v1.2.1 : Added the DupRating to the Excel output.
+# v1.3.0 : Added the override option to call directly from R. Added outdir=PATH setting. Modified the plot outputs to use pointsize=X and changed default font size.
+# v1.4.0 : Added bug fixes for the main Python wrapper.
+# v1.4.1 : Added settings$collapse (default=Family) for calculating collapsed CN of regions.
+# v1.5.0 : Added multithreading. Added rDNA parsing to defaults.
+version = "v1.5.0"
 
 ####################################### ::: USAGE ::: ############################################
 # Example use:
@@ -44,17 +52,20 @@ version = "v1.0.5"
 # : busco=FILE = Full BUSCO table. If a number, will interpret as scdepth value.
 # : regfile=FILE = Optional delimited file or GFF to calculate depths for
 # : reghead=LIST = Optional SeqName,Start,End or GFF feature type. Defaults to SeqName,Start,End or "gene"
-# : gfftype=LIST = List of GFF types for GFF input ["gene"]
+# : gfftype=LIST = List of GFF types for GFF input ["gene,rRNA"]
+# : collapse=LIST = List of fields for regfiles on which to collapse CN ["Family"]
 # : chromcheck=LIST = List of chromosomes (or min. chrom size) for individual window analysis
 # : seqstats=T/F = Whether to output statistics for each sequence
 # : katfile=FILE = high accuracy read KAT kmer frequencies for plotting 
 # : katself=FILE = assembly vs self KAT kmer frequencies for plotting 
 # : homfile=FILE = assembly self-mapping homology depth file for plotting 
 # : pngdir=PATH = output path for PNG graphics
+# : pointsize=X = adjust the output text size [24]
 # : cnmax=INT = maximum CN value for output graphics
 # : scdepth=NUM = Single copy read depth to use in place of BUSCO-derived depth
 # : buscocn=T/F = Whether to use the BUSCO-derived CN setting if possible to calculate.
 # : threads=NUM = Number of threads to use. [0 will use detectCores() - 1]
+# : fragmented=T/F = Whether to use the BUSCO-derived CN setting if possible to calculate.
 
 #i# Python code:
 # slimsuitepath = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)),'../')) + os.path.sep
@@ -79,18 +90,23 @@ version = "v1.0.5"
 #!# Add GC content calculation to the tabular output.
 #!# Add min. length for regions to check
 #!# Add support for CSV feature files.
+#!# Might want to reduce the amount of log output for large, highly fragmented genomes.
 
 ####################################### ::: SETUP ::: ############################################
 ### ~ Commandline arguments ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 defaults = list(adjust=12,scdepth=0,busco="",depfile="",regfile="",threads=0,
                 winsize=0,winstep=1,debug=FALSE,chromcheck="None",cnmax=4,
                 katfile='None', katself='None', homfile='None',
-                seqstats=FALSE,sigdif=FALSE,seqnames=vector(),
-                pngwidth=1200,pngheight=900,pointsize=16,pngdir="pngplots",
-                basefile="depthcopy",buscocn=TRUE,
-                gfftype="gene",reghead="SeqName,Start,End",outlog=stdout())
+                seqstats=FALSE,sigdif=FALSE,seqnames=vector(),outdir=".",
+                pngwidth=1200,pngheight=900,pointsize=24,pngdir="pngplots",
+                basefile="depthcopy",buscocn=TRUE,fragmented=FALSE,rscript=TRUE,
+                gfftype="gene,rRNA",reghead="SeqName,Start,End",collapse="Family",outlog=stdout())
 settings <- defaults
 argvec = commandArgs(TRUE)
+if("override" %in% ls()){
+  argvec = override
+  settings$rscript = FALSE
+}
 if(FALSE){
   argvec = strsplit("winsize=100000 depfile=Mqui_v1.fastmp regfile=Mqui_v1.easy.lca_genes.gff busco=full_table_Mqui_v1.tsv basefile=test chromcheck=1e6 chromcheck=0 katfile=Mqui_v1.kat-hifi-counts.cvg katself=Mqui_v1.kat-counts.cvg homfile=Mqui_v1.self.fasthom",split=" ")[[1]]
 }
@@ -109,7 +125,7 @@ for(cmd in c("scdepth","winstep")){
   settings[[cmd]] = as.numeric(settings[[cmd]])
 }
 if(settings$gfftype == ""){ settings$gfftype <- "*" }
-for(cmd in c("reghead","gfftype","chromcheck")){
+for(cmd in c("reghead","gfftype","chromcheck","collapse")){
   if(length(settings[[cmd]]) > 0){
     settings[[cmd]] = strsplit(settings[[cmd]],',',TRUE)[[1]]
   }else{
@@ -137,7 +153,18 @@ for(cmd in names(settings)[order(names(settings))]){
   logWrite(paste("CMD:",cmd,"=",paste0(settings[[cmd]],collapse=",")))
 }
 settings$buscofile = settings$busco
-dir.create(settings$pngdir, showWarnings = FALSE)
+dir.create(settings$outdir, showWarnings = settings$debug, recursive = TRUE)
+if(! startsWith(settings$pngdir,"/")){
+  settings$pngdir <- file.path(settings$outdir,settings$pngdir)
+}
+dir.create(settings$pngdir, showWarnings = settings$debug, recursive = TRUE)
+settings$purebase <- basename(settings$basefile)
+logWrite(paste("#BASE",settings$basefile))
+logWrite(paste("#OUT Output directory:",settings$outdir))
+logWrite(paste("#OUT Output plot directory:",settings$pngdir))
+settings$plotbase <- file.path(settings$pngdir,settings$basefile)
+settings$basefile <- file.path(settings$outdir,settings$basefile)
+logWrite(paste0("#OUT Output files: ",settings$basefile,".*"))
 
 ### ~ Load packages ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 if(! "tidyverse" %in% installed.packages()[,"Package"]){
@@ -158,9 +185,12 @@ if(settings$writexl){
 #i# Currently no parallelisation, but remove this line when available
 #i# Use clusterExport(settings$cl, "<env_object>") to get the data into the cluster
 #i# USe clusterApply(settings$cl, <vector>, <function>) to run function in parallel
-settings$threads <- 1
-if(settings$threads != 1 & "parallel" %in% installed.packages()[,"Package"]){
+#settings$threads <- 1
+if(settings$threads != 1 & "doParallel" %in% installed.packages()[,"Package"]){
   library(parallel)
+  library(foreach)
+  library(doParallel)
+  library(codetools)
   if(settings$threads == 0){
     settings$threads <- detectCores() - 1
   }
@@ -215,7 +245,16 @@ v3head = c("BuscoID","Status","Contig","Start","End","Score","Length")
 v5head = c("BuscoID","Status","Contig","Start","End","Strand","Score","Length","OrthoDBURL","Description")
 #i# NOTE: URL and Description not always there.
 buscoTable <- function(filename){
-  buscodb = read.table(filename,fill=TRUE,row.names = NULL,sep="\t",quote="")
+  # Check the header for BUSCO v5
+  con <- file(filename,"r")
+  bv5 <- startsWith(readLines(con,n=1),"# BUSCO version is: 5")
+  close(con)
+  if(bv5){
+    buscodb = read.table(filename,fill=TRUE,row.names = NULL,col.names=v5head,sep="\t",quote="")
+  }else{
+    buscodb = read.table(filename,fill=TRUE,row.names = NULL,sep="\t",quote="")
+  }
+  # Load with the relevant headers
   if(ncol(buscodb) > length(v3head)){
     logWrite(paste("#BUSCOV BUSCO v5 format"))
     colnames(buscodb) = v5head[1:ncol(buscodb)]
@@ -224,8 +263,14 @@ buscoTable <- function(filename){
     colnames(buscodb) = v3head
   }
   buscodb$Contig = as.character(buscodb$Contig)
-  buscodb <- buscodb[buscodb$Status == "Complete",]
-  logWrite(paste('#BUSCO',nrow(buscodb),"Complete BUSCO genes loaded from",filename))
+  if(settings$fragmented){
+    buscodb <- buscodb[buscodb$Status %in% c("Complete","Fragmented"),]
+    logWrite(paste('#BUSCO',nrow(buscodb[buscodb$Status == "Complete",]),"Complete BUSCO genes loaded from",filename))
+    logWrite(paste('#BUSCO',nrow(buscodb),"Complete & Fragmented BUSCO genes loaded from",filename))
+  }else{
+    buscodb <- buscodb[buscodb$Status == "Complete",]
+    logWrite(paste('#BUSCO',nrow(buscodb),"Complete BUSCO genes loaded from",filename))
+  }
   if(length(settings$seqnames) > 0){
     #buscodb <- buscodb %>% filter(Contig %in% settings$seqnames)
     buscodb <- buscodb[buscodb$Contig %in% settings$seqnames,]
@@ -235,7 +280,16 @@ buscoTable <- function(filename){
 }
 #i# dupdb = buscoDupTable(filename)
 buscoDupTable <- function(filename){
-  buscodb = read.table(filename,fill=TRUE,row.names = NULL,sep="\t",quote="")
+  # Check the header for BUSCO v5
+  con <- file(filename,"r")
+  bv5 <- startsWith(readLines(con,n=1),"# BUSCO version is: 5")
+  close(con)
+  if(bv5){
+    buscodb = read.table(filename,fill=TRUE,row.names = NULL,col.names=v5head,sep="\t",quote="")
+  }else{
+    buscodb = read.table(filename,fill=TRUE,row.names = NULL,sep="\t",quote="")
+  }
+  # Load with the relevant headers
   if(ncol(buscodb) > length(v3head)){
     #logWrite(paste("#BUSCOV BUSCO v5 format"))
     colnames(buscodb) = v5head[1:ncol(buscodb)]
@@ -247,7 +301,7 @@ buscoDupTable <- function(filename){
   buscodb = buscodb[buscodb$Status == "Duplicated",]
   #logWrite(paste(nrow(buscodb),"Duplicated BUSCO genes loaded from",filename))
   logWrite(paste('#BUSCO',nrow(buscodb),"Duplicated BUSCO genes loaded from",filename))
-  if(length(settings$seqnames) > 0){
+  if(length(settings$seqnames) > 0 & nrow(buscodb) > 0){
     #buscodb <- buscodb %>% filter(Contig %in% settings$seqnames)
     buscodb <- buscodb[buscodb$Contig %in% settings$seqnames,]
     logWrite(paste('#BUSCO',nrow(buscodb),"Duplicated BUSCO genes following filtering to",length(settings$seqnames),"sequences."))
@@ -258,22 +312,49 @@ buscoDupTable <- function(filename){
 ### ~ Load Region File ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 #!# Replace with rje_load.R function
 #i# Load delimited file into Region file
-#i# regdb = regionTable(filename,delimit="\t",uniqreg=FALSE)
-regionTable <- function(filename,delimit="\t",uniqreg=FALSE){
+#i# regdb = regionTable(filename,delimit="ext",uniqreg=FALSE)
+regionTable <- function(filename,delimit="ext",uniqreg=FALSE){
+  # Extract delimiter from file extension
+  if(delimit == "ext"){
+    ext <- strsplit(filename,".",fixed=TRUE)[[1]]
+    ext <- ext[length(ext)]
+    delimit <- "\t"
+    logWrite(paste0('#FILEXT ',filename,' -> "*.',ext,'"'))
+    if(tolower(ext) %in% c("csv")){
+      delimit <- ","
+    }
+    if(tolower(ext) %in% c("txt")){
+      delimit <- " "
+    }
+  }
+  logWrite(paste0('#DELIM Reading ',filename,' as "',delimit,'" delimited'))
+
   #!# Change to deal with different case
   regdb = read.table(filename,fill=TRUE,sep=delimit,header=TRUE,row.names = NULL,quote="\"",comment.char="")
   if(uniqreg){
     logWrite(paste(nrow(regdb),"lines loaded from",filename))
     #?# Reduce to unique SeqName, Start, End
     regdb = regdb %>% select(settings$reghead) %>% distinct()
-    #logWrite(paste(nrow(regdb),"unique regions loaded from",filename))
     logWrite(paste('#REGION',nrow(regdb),"unique regions loaded from",filename))
   }else{
-    #logWrite(paste(nrow(regdb),"regions loaded from",filename))
     logWrite(paste('#REGION',nrow(regdb),"regions loaded from",filename))
   }
+  logWrite(paste0('#REGHEAD ',settings$reghead[1],": ",settings$reghead[1] %in% colnames(regdb),"; ",settings$reghead[2],": ",settings$reghead[2] %in% colnames(regdb),"; ",settings$reghead[3],": ",settings$reghead[3] %in% colnames(regdb),"; "))
+  headok <- settings$reghead[1] %in% colnames(regdb) & settings$reghead[2] %in% colnames(regdb) & settings$reghead[3] %in% colnames(regdb)
+  if(! headok){
+    logWrite(paste('#ERROR','Error with region file headers:',paste0(colnames(regdb),sep=", ")))
+    regdb <- tibble(V1=c(),V2=c(),V3=c())
+    colnames(regdb) <- settings$reghead
+    return(regdb)
+  }
   if(length(settings$seqnames) > 0){
-    regdb <- regdb[regdb[[settings$reghead[1]]] %in% settings$seqnames,]
+    namefield <- settings$reghead[1]
+    if(sum(regdb[[namefield]] %in% settings$seqnames) > 0){
+        regdb <- regdb[regdb[[namefield]] %in% settings$seqnames,]
+    }else{
+        regdb <- tibble(V1=c(),V2=c(),V3=c())
+        colnames(regdb) <- settings$reghead
+    }
     logWrite(paste('#REGION',nrow(regdb),"regions following filtering to",length(settings$seqnames),"sequences."))
   }
   return(regdb)
@@ -315,19 +396,37 @@ gffTable <- function(filename,gfftype="gene"){
     gffdb <- gffdb[gffdb$SeqName %in% settings$seqnames,]
     logWrite(paste('#GFF',nrow(gffdb),"GFF regions following filtering to",length(settings$seqnames),"sequences."))
   }
+  #Pull out special attributes to Family
+  if("rRNA" %in% gffdb$FType){
+    gffdb <- gffdb %>%
+        mutate(Family = if_else(FType == "rRNA", str_extract(ID, "product=(\\S+)") %>% str_remove("product="), NA)) %>%
+        mutate(Family = if_else(is.na(Family) & FType == "rRNA", str_extract(Attributes, "product=(\\S+)") %>% str_remove("product="), NA))
+  }
+  if("RepeatMasker" %in% gffdb$Source){
+    gffdb <- gffdb %>%
+        mutate(Family = str_extract(Attributes, "Motif:(\\S+)") %>% str_remove("Motif:") %>% str_remove('"'))
+  }
+
   return(gffdb)
 }
 
 ### ~ Tidy tables for output ~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 #i# Sets dp etc. for output fields in a table then returns for output
 tidyTable <- function(regdb){
-  ifields = c("Start","End",reghead[2],reghead[3],"ModeX")
+  ifields = c("Start","End",reghead[2],reghead[3],"ModeX","BP")
+  dp1fields = c("AdjBP")
   dp2fields = c("MeanX","MedX","DensX","DensK","HomPC")
   dp3fields = c("SelfK","CN","CIsyst","CIrand")
   #i# Integers
   for(colname in ifields){
     if(colname %in% colnames(regdb)){
       regdb[[colname]] = as.integer(regdb[[colname]])
+    }
+  }
+  #i# 1 d.p.
+  for(colname in dp1fields){
+    if(colname %in% colnames(regdb)){
+      regdb[[colname]] = round(regdb[[colname]],1)
     }
   }
   #i# 2 d.p.
@@ -413,14 +512,13 @@ densModeZoom <- function(depvec,adjust=16,plotbase=NA,plotmain=NA){
     bdens = density(newvec,n=n)
     ## --- ##
     pngfile = paste0(plotbase,".raw.png")
-    pngfile = file.path(settings$pngdir,pngfile)
+    #pngfile = file.path(settings$pngdir,pngfile)
     png(pngfile,width=settings$pngwidth,height=settings$pngheight,pointsize=settings$pointsize)
     densModePlot(bdens,centre,scdepth,paste(plotmain,"raw density profile"))
     dev.off()
     logWrite(paste(plotmain,"raw density profile output to:",pngfile))
     ## --- ##
     pngfile = paste0(plotbase,".scdepth.png")
-    pngfile = file.path(settings$pngdir,pngfile)
     png(pngfile,width=settings$pngwidth,height=settings$pngheight,pointsize=settings$pointsize)
     densModePlot(depdens,centre,scdepth,paste(plotmain,"smoothed density profile"))
     dev.off()
@@ -461,9 +559,9 @@ buscoDepData <- function(buscofile,deplist){
     depvec = depvec[depvec >=1 ]
   }
   #i# Calculate SCDepth from BUSCO genes
-  scdepth = densModeZoom(depvec,adjust=settings$adjust,plotbase=settings$basefile,plotmain="BUSCO")
+  scdepth = densModeZoom(depvec,adjust=settings$adjust,plotbase=settings$plotbase,plotmain="BUSCO")
   #!# Generate PNG BUSCO depth profile
-  logWrite(paste("#SCDPETH BUSCO SC Depth:",round(scdepth,2)))
+  logWrite(paste("#SCDEPTH BUSCO SC Depth:",round(scdepth,2)))
   ### ~ Save SC Depth ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
   if(scdepth > 0){
     outfile = paste(settings$depfile,"scdepth",sep=".",collapse=".")
@@ -471,17 +569,17 @@ buscoDepData <- function(buscofile,deplist){
     write(scdepth,outfile)
     if(settings$scdepth > 0){
      if(settings$buscocn){
-        logWrite(paste("#SCDPETH Over-riding scdepth=NUM SC Depth:",round(scdepth,2)))
+        logWrite(paste("#SCDEPTH Over-riding scdepth=NUM SC Depth:",round(scdepth,2)))
      }else{
       scdepth = settings$scdepth
-      logWrite(paste("#SCDPETH Using scdepth=NUM SC Depth:",round(scdepth,2)))
+      logWrite(paste("#SCDEPTH Using scdepth=NUM SC Depth:",round(scdepth,2)))
      }
     }
   }else{
     logWrite(paste(nrow(buscodb),"BUSCO Complete SC Depth calculation failed!"))
     if(settings$scdepth > 0){
       scdepth = settings$scdepth
-      logWrite(paste("#SCDPETH Using scdepth=NUM SC Depth:",round(scdepth,2)))    
+      logWrite(paste("#SCDEPTH Using scdepth=NUM SC Depth:",round(scdepth,2)))
     }else{
       quit("no",1)
     }
@@ -490,6 +588,19 @@ buscoDepData <- function(buscofile,deplist){
 }
 
 #i# Combine BUSCO data with depth profiles
+processBUSCORow <- function(row,buscovec){
+    seqdep = buscovec[[row$BuscoID]]
+    if(length(seqdep) >= 1){
+      row$MeanX = mean(seqdep)
+      row$ModeX = getmode(seqdep)
+      row$MedX = median(seqdep)
+      row$DensX = densModeZoom(seqdep,adjust=settings$adjust)
+    }else{
+      logWrite(paste("#WARN BUSCOID",row$BuscoID,"has zero-length depth vector"))
+    }
+    cat(".", file = stderr())
+    return(row)
+}
 #># buscodat = buscoDepCalc(buscodat)
 buscoDepCalc <- function(buscodat){
   depvec = buscodat$depvec
@@ -509,20 +620,31 @@ buscoDepCalc <- function(buscodat){
   buscodb$CIsyst = 0.0
   buscodb$CIrand = 0.0
   # Calculate gene stats
-  for(i in 1:nrow(buscodb)){
-    #logWrite(buscodb$BuscoID[i])
-    seqdep = buscovec[[buscodb$BuscoID[i]]]
-    if(length(seqdep) >= 1){
-      buscodb$MeanX[i] = mean(seqdep)
-      buscodb$ModeX[i] = getmode(seqdep)
-      buscodb$MedX[i] = median(seqdep)
-      buscodb$DensX[i] = densModeZoom(seqdep,adjust=settings$adjust)
-    }else{
-      logWrite(paste("#WARN BUSCOID",buscodb$BuscoID[i],"has zero-length depth vector"))
+  if(settings$threads > 1){
+    dependencies <- findGlobals(processBUSCORow, merge = FALSE)
+    newbuscodb <- foreach(i = 1:nrow(buscodb), .combine = rbind, .packages = c("tidyverse"), .export = c(dependencies$variables,"buscovec")) %dopar% {
+      row <- buscodb[i, ]
+      processed_row <- processBUSCORow(row,buscovec)
+      return(processed_row)
     }
-    cat(".", file = stderr())
+    cat("\n", file = stderr())
+    # Convert the results back to a data frame
+    buscodb <- as.data.frame(newbuscodb)
+  }else{
+      for(i in 1:nrow(buscodb)){
+        seqdep = buscovec[[buscodb$BuscoID[i]]]
+        if(length(seqdep) >= 1){
+          buscodb$MeanX[i] = mean(seqdep)
+          buscodb$ModeX[i] = getmode(seqdep)
+          buscodb$MedX[i] = median(seqdep)
+          buscodb$DensX[i] = densModeZoom(seqdep,adjust=settings$adjust)
+        }else{
+          logWrite(paste("#WARN BUSCOID",buscodb$BuscoID[i],"has zero-length depth vector"))
+        }
+        cat(".", file = stderr())
+      }
+      cat("\n", file = stderr())
   }
-  cat("\n", file = stderr())
   # Return updated data
   logWrite("#BUSCO BUSCO depth calculations complete.")
   # Add Homology / Kmer data if present
@@ -585,27 +707,7 @@ buscoCN <- function(buscodat){
 }
 
 ### ~ Region XDepth and CN calclations ~~~~~~~~~~~~~~~ ###
-depVector <- function(seqname,posi,posj,deplist){
-  if(posj < posi){ return(vector()) }
-  return(deplist[[seqname]][posi:posj])
-}
-regCN <- function(regdb,buscoMean=0,buscoSD=0){
-  if(nrow(regdb)<1){
-    logWrite('Zero rows: skipping')
-    return(regdb)
-   }
-  regdb$MeanX = 0
-  regdb$MedX = 0  
-  regdb$ModeX = 0  
-  regdb$DensX = 0  
-  regdb$CN = 0
-  regdb$CIsyst = 0.0
-  regdb$CIrand = 0.0
-  logWrite(paste('Table headers:',paste0(colnames(regdb),collapse=", ")))
-  logWrite(paste('Region headers:',paste0(reghead,collapse=", ")))
-  logWrite("Calculating region CN...")
-  # Calculate gene stats
-  for(i in 1:nrow(regdb)){
+processRegCNrow <- function(regdb,i){
     seqname = regdb[i,reghead[1]]
     seqi = regdb[i,reghead[2]]
     seqj = regdb[i,reghead[3]]
@@ -627,7 +729,60 @@ regCN <- function(regdb,buscoMean=0,buscoSD=0){
     }else{
       logWrite(paste0("#WARN Region ",seqname,":",seqi,"-",seqj," has zero-length depth vector"))
     }
-    
+    return(regdb[i,])
+}
+depVector <- function(seqname,posi,posj,deplist){
+  if(posj < posi){ return(vector()) }
+  return(deplist[[seqname]][posi:posj])
+}
+regCN <- function(regdb,buscoMean=0,buscoSD=0){
+  if(nrow(regdb)<1){
+    logWrite('Zero rows: skipping')
+    return(regdb)
+   }
+  regdb$MeanX = 0
+  regdb$MedX = 0  
+  regdb$ModeX = 0  
+  regdb$DensX = 0  
+  regdb$CN = 0
+  regdb$CIsyst = 0.0
+  regdb$CIrand = 0.0
+  logWrite(paste('Table headers:',paste0(colnames(regdb),collapse=", ")))
+  logWrite(paste('Region headers:',paste0(reghead,collapse=", ")))
+  logWrite("Calculating region CN...")
+  # Calculate gene stats
+  if(settings$threads > 1){
+    dependencies <- findGlobals(processRegCNrow, merge = FALSE)
+    newregdb <- foreach(i = 1:nrow(regdb), .combine = rbind, .packages = c("tidyverse"), .export = c(dependencies$variables)) %dopar% {
+      processed_row <- processRegCNrow(regdb,i)
+      return(processed_row)
+    }
+    # Convert the results back to a data frame
+    regdb <- as.data.frame(newregdb)
+  }else{
+      for(i in 1:nrow(regdb)){
+        seqname = regdb[i,reghead[1]]
+        seqi = regdb[i,reghead[2]]
+        seqj = regdb[i,reghead[3]]
+        if(seqi > seqj){
+          seqi = regdb[i,reghead[3]]
+          seqj = regdb[i,reghead[2]]
+        }
+        seqdep = depVector(seqname,seqi,seqj,deplist)
+        if(length(seqdep) >= 1){
+          regdb$MeanX[i] = mean(seqdep)
+          regdb$ModeX[i] = getmode(seqdep)
+          regdb$MedX[i] = median(seqdep)
+          regdb$DensX[i] = densModeZoom(seqdep,adjust=settings$adjust)
+          #i# Performing per row calculations for reporting
+          regdb$CN[i] = regdb$DensX[i] / scdepth
+          regdb$CIsyst[i] = 1.96 * buscoSD * sqrt(regdb$DensX[i] / (buscoMean ** 3))
+          regdb$CIrand[i] = 1.96 * buscoSD * regdb$DensX[i] / (buscoMean ** 2)
+          writeLines(paste0(seqname,":",seqi,"-",seqj," = ",round(regdb$DensX[i],2),"X = ",round(regdb$CN[i],2),"N +/- ",round(regdb$CIrand[i],2)))
+        }else{
+          logWrite(paste0("#WARN Region ",seqname,":",seqi,"-",seqj," has zero-length depth vector"))
+        }
+      }
   }
   logWrite("#CNCALC Region CN calculations complete.")
   # Add Homology / Kmer data if present
@@ -803,17 +958,26 @@ if(file.exists(buscofile)){
   
   ### ~ Duplicated BUSCO genes ~~~~~~~~~~~~~~~~~~~~~~~~ ###
   dupdb = buscoDupTable(buscofile)
-  #i# Calculate CN per gene
-  reghead <- c("Contig","Start","End")
-  dupdb <- regCN(as.data.frame(dupdb),buscoMean,buscoSD)
-  reglist$Duplicated = dupdb
-  logWrite(paste('Reverted region headers:',paste0(reghead,collapse=", ")))
-  ### ~ Save CN table ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
-  #i# Output table to with CN data
   outfile = paste(settings$basefile,"busco.dupcnv.tsv",sep=".",collapse=".")
+  #i# Calculate CN per gene
   if(nrow(dupdb) > 0){
+    reghead <- c("Contig","Start","End")
+    logWrite(paste('BUSCO region headers:',paste0(reghead,collapse=", ")))
+    dupdb <- regCN(as.data.frame(dupdb),buscoMean,buscoSD)
+    ## ~ Duplicated BUSCO analysis ~~~~~~~~~~~~~~~~~~ ##
+    dupdb <- as.tibble(dupdb) %>% group_by(BuscoID) %>% mutate(DupN = n(), DupCN = mean(CN))
+    dupdb$DupRating <- FALSE
+    dupdb[dupdb$DupCN >= 0.75,]$DupRating <- TRUE
+    dupT <- unique(dupdb[dupdb$DupRating,]$BuscoID)
+    dupF <- unique(dupdb[! dupdb$DupRating,]$BuscoID)
+    nT <- length(dupT)
+    nF <- length(dupF)
+    logWrite(paste("#DUPS",(nT+nF),"Duplicated BUSCOs:",nT,"= probably real;",nF,"= probably false. See",outfile,"for details."))
+    ## ~ Save CN table ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ##
+    #i# Output table to file with CN data
     logWrite(paste("#SAVE",nrow(dupdb),"Duplicated BUSCO genes output to",outfile))
     write.table(tidyTable(dupdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
+    reglist$Duplicated = dupdb
   }else{
     logWrite(paste("#SAVE","No Duplicated BUSCO genes.",outfile,"not generated."))
   }
@@ -822,12 +986,14 @@ if(file.exists(buscofile)){
 ### ~ Calculate Region CN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 #i# 3. Load region files
 #i# Cycle through regfile split on , and trying to split name:file on ":"
+adjdb <- tibble(Dataset=c(),Collapse=c(),TypeN=c(),N=c(),CN=c(),BP=c(),AdjBP=c())
 for(regfile in strsplit(settings$regfile,",",TRUE)[[1]]){
 	regname = "Regions"
 	if(length(strsplit(regfile,":",TRUE)[[1]]) > 1){
 		regname = strsplit(regfile,":",TRUE)[[1]][1]
 		regfile = strsplit(regfile,":",TRUE)[[1]][2]
 	}
+	logWrite(paste(regname,regfile,"exists?:",file.exists(regfile)))
 	if(file.exists(regfile)){
 	  #i# GFF file
 	  if(sum(endsWith(regfile,c("gff","gff3")))){
@@ -839,6 +1005,7 @@ for(regfile in strsplit(settings$regfile,",",TRUE)[[1]]){
         #logWrite(paste('Region headers:',paste0(settings$reghead,collapse=", "),"->",paste0(reghead,collapse=", ")))
 		regdb <- regionTable(regfile)
 	  }
+	  logWrite(paste(regfile,"->",paste0(reghead,collapse=", ")))
 	  if(length(nrow(regdb)<1) < 1 | nrow(regdb)<1){
 	    logWrite(paste('#ERROR Problem loading data from',regfile,'- check headers vs reghead and/or file content.'))
 	    regdb <- NULL
@@ -858,7 +1025,37 @@ for(regfile in strsplit(settings$regfile,",",TRUE)[[1]]){
 	  logWrite(paste("#SAVE",nrow(regdb),"CN predictions output to",outfile))
 	  write.table(tidyTable(regdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
 	  reglist[[regname]] = regdb
+
+	  ### ~ Collapse Regions ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+	  #i# Cycle through the union of settings$collapse and colnames(regdb)
+	  cfieldlist <- settings$collapse[settings$collapse %in% colnames(regdb)]
+	  #i# Output to same as above but with regcnv replaced with cfield
+	  for(cfield in cfieldlist){
+	    outfile = paste(c(settings$basefile,outvec[1:length(outvec)-1],cfield,"tsv"),sep=".",collapse=".")
+	    colldb <- regdb %>% filter(! is.na(!!sym(cfield))) %>%
+	      rename(SeqName=reghead[1],Start=reghead[2],End=reghead[3]) %>%
+	      select(SeqName,!!sym(cfield),Start,End,MeanX,MedX,ModeX,DensX,CN,DensK,SelfK,HomPC) %>%
+	      mutate(Length=End-Start+1, AdjLen=Length*CN) %>%
+	      group_by(SeqName,!!sym(cfield)) %>%
+	      summarise(N=n(),CN=sum(CN),BP=sum(Length),AdjBP=sum(AdjLen))
+          #p <- vplot(pdata %>% filter(Metric == !!metric),
+        logWrite(paste("#SAVE",nrow(colldb),"Collapsed CN output to",outfile))
+	    write.table(tidyTable(colldb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
+	    outfile = paste(c(settings$basefile,outvec[1:length(outvec)-1],cfield,"total.tsv"),sep=".",collapse=".")
+	    colldb <- colldb %>% group_by(!!sym(cfield)) %>%
+	      summarise(N=sum(N),CN=sum(CN),BP=sum(BP),AdjBP=sum(AdjBP))
+        logWrite(paste("#SAVE",nrow(colldb),"Collapsed CN totals output to",outfile))
+	    write.table(tidyTable(colldb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
+	    adjrow <- colldb %>% mutate(Dataset=regname,Collapse=cfield) %>%
+	      group_by(Dataset,Collapse) %>% summarise(TypeN=n(),N=sum(N),CN=sum(CN),BP=sum(BP),AdjBP=sum(AdjBP))
+	    adjdb <- bind_rows(adjdb,adjrow)
+      }
 	}
+}
+if(nrow(adjdb)>0){
+    outfile = paste(c(settings$basefile,"collapse.tsv"),sep=".",collapse=".")
+    logWrite(paste("#SAVE",nrow(adjdb),"collapse summaries output to",outfile))
+	write.table(tidyTable(adjdb),outfile,sep="\t",quote=FALSE,row.names=FALSE)
 }
 
 ### ~ Calculate SeqStats CN ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -891,7 +1088,7 @@ if(settings$winsize>0){
     if(seqlen <= settings$winsize){
       windb <- bind_rows(windb,
                          tibble(SeqName=seqname,Start=1,End=seqlen,SeqLen=seqlen))
-      logWrite(paste0(seqname,"(",seqlen," bp) => 1 window"))
+      logWrite(paste0(seqname," (",seqlen," bp) => 1 window"))
     }else{
       winx = as.integer(seqlen / settings$winstep) + 1
       starts = 0:winx * settings$winstep + 1
@@ -911,7 +1108,7 @@ if(settings$winsize>0){
       }
         
       windb <- bind_rows(windb,seqdb) %>% select(SeqName,Start,End,SeqLen)
-      writeLines(paste0(seqname,"(",seqlen," bp) => ",nrow(seqdb)," windows"))
+      writeLines(paste0(seqname," (",seqlen," bp) => ",nrow(seqdb)," windows"))
     }
   }
   #i# Calculate CN per region
@@ -958,12 +1155,14 @@ if(settings$writexl){
   logWrite(paste("#SAVE","All CN predictions output to",outfile))
 }
 
+
 ### ~ Generate new Plot database ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 reghead <- settings$reghead
 newplotdb = tibble(Dataset=c(),SeqName=c(),Start=c(),End=c(),MeanX=c(),MedX=c(),ModeX=c(),DensX=c(),CN=c(),DensK=c(),SelfK=c(),HomPC=c())
 for(rname in names(reglist)){
 	adddb <- reglist[[rname]]
     if(nrow(adddb) < 1){ next }
+	if(rname %in% c("DupRating")){ next }
 	if(rname %in% c("BUSCO","Duplicated")){
 		adddb <- adddb %>% rename(SeqName=Contig)
 	}
@@ -1006,6 +1205,7 @@ vioPlot <- function(plotdb,plotfield){
     p <- ggbetweenstats(
       data = splotdb,
       results.subtitle = length(labels) <= 4 & settings$sigdif,
+      centrality.label.args = list(size  = settings$pointsize/4, nudge_y = 0.5, alpha = 0.75),
       pairwise.comparisons = settings$sigdif,
       x = Dataset,
       y = plotfield
@@ -1018,7 +1218,6 @@ vioPlot <- function(plotdb,plotfield){
         caption = NULL
       ) +
       theme(text = element_text(size=settings$pointsize))
-
   }
   
   nlevel = length(levels(factor(plotdb$Dataset)))
@@ -1063,8 +1262,7 @@ if(nrow(plotdb) > 0){
     }
     if(max(plotdb[[plotfield]]) > 0){
       plt <- vioPlot(plotdb,plotfield)
-      pdffile = paste(settings$basefile,plotfield,"pdf",sep=".")
-      pdffile = file.path(settings$pngdir,pdffile)
+      pdffile = paste(settings$plotbase,plotfield,"pdf",sep=".")
       ggsave(
 		  filename = pdffile,
 		  plot = plt + theme(text = element_text(size=settings$pointsize)),
@@ -1074,8 +1272,7 @@ if(nrow(plotdb) > 0){
 		  units = "cm"
       )
       logWrite(paste(plotfield,"violin plot output to:",pdffile))
-      pngfile = paste(settings$basefile,plotfield,"png",sep=".")
-      pngfile = file.path(settings$pngdir,pngfile)
+      pngfile = paste(settings$plotbase,plotfield,"png",sep=".")
       png(pngfile,width=settings$pngwidth,height=settings$pngheight,pointsize=settings$pointsize*2)
       print(plt)
       dev.off()
@@ -1115,7 +1312,7 @@ for(plotfield in plotfields[plotfields != "CN"]){
     datdb = plotdb %>% filter(Dataset==dset)
     if(nrow(datdb) > 0){
       plt <- hexPlot(datdb,plotfield)
-      pngfile = paste(settings$basefile,dset,plotfield,"png",sep=".")
+      pngfile = paste(settings$purebase,dset,plotfield,"png",sep=".")
       pngfile = file.path(hexdir,pngfile)
       png(pngfile,width=settings$pngwidth,height=settings$pngheight,pointsize=settings$pointsize*2)
       print(plt)
@@ -1124,13 +1321,17 @@ for(plotfield in plotfields[plotfields != "CN"]){
     }
   }
 }
-logWrite(paste0('#PLOTS PNG graphics output to ',settings$pngdir,"/",settings$basefile,".*"))
+logWrite(paste0('#PLOTS PNG graphics output to ',settings$plotbase,".*"))
 if(settings$ggstatsplot){
   logWrite('#CITE If using violin plots, please cite:  Patil, I. (2021). J. Open Source Software, 6(61), 3167, doi:10.21105/joss.03167')
 }
 
 ### ~ Finish ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
+if(settings$threads > 1){
+    stopCluster(settings$cl)
+    logWrite(paste("#PARA Local cluster stopped."))
+}
 options(warn = oldwarn)
 logWrite("#RCODE DepthCopy.R finished.")
-quit("no",0)
+#quit("no",0)
 
