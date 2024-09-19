@@ -19,8 +19,8 @@
 """
 Module:       DepthKopy
 Description:  Single-copy read-depth and kmer based copy number analysis
-Version:      1.5.0
-Last Edit:    17/07/24
+Version:      1.6.0
+Last Edit:    12/09/24
 Citation:     Chen SH et al. & Edwards RJ (2022): Mol. Ecol. Res. (doi: 10.1111/1755-0998.13574)
 Copyright (C) 2021  Richard J. Edwards - See source code for GNU License Notice
 
@@ -90,6 +90,7 @@ Commandline:
     pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
     ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
     kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
+    kmeralt=FILE        : Fasta file of alternative assembly for KAT kmer analysis [None]
     kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
     10xtrim=T/F         : Whether to trim 16bp 10x barcodes from Read 1 of Kmer Reads data for KAT analysis [False]
     ### ~ System options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -136,6 +137,8 @@ def history():  ### Program History - only a method for PythonWin collapsing! ##
     # 1.4.1 : Added depchunk=INT : Chunk input into minimum of INT bp chunks for temp depth calculation [1e6]
     # 1.4.1 : Added collapse=LIST : List of fields for regfiles on which to collapse CN ["Family"]
     # 1.5.0 : Added multithreading to R script. Added rDNA parsing to defaults.
+    # 1.5.1 : Tweaks to R code for increased speed.
+    # 1.6.0 : Added kmeralt=FILE : Fasta file of alternative assembly for KAT kmer analysis [None]
     '''
 #########################################################################################################################
 def todo():     ### Major Functionality to Add - only a method for PythonWin collapsing! ###
@@ -161,7 +164,7 @@ def todo():     ### Major Functionality to Add - only a method for PythonWin col
 #########################################################################################################################
 def makeInfo(): ### Makes Info object which stores program details, mainly for initial print to screen.
     '''Makes Info object which stores program details, mainly for initial print to screen.'''
-    (program, version, last_edit, copy_right) = ('DepthKopy', '1.5.0', 'July 2024', '2021')
+    (program, version, last_edit, copy_right) = ('DepthKopy', '1.6.0', 'September 2024', '2021')
     description = 'Single-copy read-depth based copy number analysis'
     author = 'Dr Richard J. Edwards.'
     comments = ['Citation: Chen SH et al. & Edwards RJ (2022): Mol. Ecol. Res. (doi: 10.1111/1755-0998.13574)',
@@ -227,6 +230,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
     - BAM=FILE        : BAM file of reads mapped onto assembly [$BASEFILE.bam]
     - BUSCO=TSVFILE   : BUSCO full table [full_table_$BASEFILE.busco.tsv]
     - HomFile=FILE    : Precomputed homology depth file (*.fasthom) to use [None]
+    - KmerAlt=FILE    : Fasta file of alternative assembly for KAT kmer analysis [None]
     - OutDir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./]
     - PAF=FILE        : PAF file of reads mapped onto assembly [$BASEFILE.paf]
     - RegFile=FILE    : File of SeqName, Start, End positions (or GFF) for read coverage checking [None]
@@ -302,7 +306,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
                 #self._cmdRead(cmd,type='str',att='Att',arg='Cmd')  # No need for arg if arg = att.lower()
                 #self._cmdReadList(cmd,'str',['Att'])   # Normal strings
                 self._cmdReadList(cmd,'path',['OutDir'])  # String representing directory path 
-                self._cmdReadList(cmd,'file',['HomFile'])  # String representing file path
+                self._cmdReadList(cmd,'file',['HomFile','KmerAlt'])  # String representing file path
                 #self._cmdReadList(cmd,'date',['Att'])  # String representing date YYYY-MM-DD
                 self._cmdReadList(cmd,'bool',['DepOnly','KmerSelf','DocHTML'])  # True/False Booleans
                 self._cmdReadList(cmd,'int',['PointSize','WinSize'])   # Integers
@@ -431,6 +435,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
         ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
         kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
+        kmeralt=FILE        : Fasta file of alternative assembly for KAT kmer analysis [None]
         kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
         10xtrim=T/F         : Whether to trim 16bp 10x barcodes from Read 1 of Kmer Reads data for KAT analysis [False]
         ### ~ System options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -501,6 +506,19 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         are calculated based on random sampling of the observed single copy read depth. (Details to follow: available on request.)
         By default, the R script will parallelise this using the number of threads set with `forks=INT`. If this causes
         memory issues, it can be forced to run with a single thread using `memsaver=T`.
+
+        ### Region collapse for depth-adjusted copy number
+
+        Regions provided for DepthKopy summaries using the `regfile=LIST` can be collapsed to provide overall summary
+        statistics using the `collapse=LIST` argument. If a delimited region file has been provided, any fields in
+        `collapse=LIST` (`Family` by default) will be used to group and collapse regions. DepthKopy will output the
+        number (`N`), summed length (`BP`), predicted copy number (`CN`) and CN-adjusted summed length (`AdjBP`) for
+        each unique value of the collapse field. Copy number (`XN`) and summed lengths (`XBP`) adjusted by Mean depth
+        (i.e. `MeanX / SCDepth`) are also output. This collapsing is done at three levels: (1) per sequence, (2) totals
+        for the whole assembly, and (3) combined totals over all values of the collapse field. Note that no adjustment
+        for overlapping features is made for the latter calculation. RepeatMasker GFF files will extract the repeat motif
+        name into `Family`. Barrnap rRNA prediction GFF files will extract the rRNA gene product into `Family`. This
+        enables a depth-adjusted estimate of rRNA and other repeat copy numbers.
 
         ## Step 6: Outputs
 
@@ -607,6 +625,8 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
                 self.setStr({'KatFile':'{0}.kat-counts.cvg'.format(basefile)})
             if self.getBool('KmerSelf') and self.selfKat():
                 self.setStr({'KatSelf':'{0}.self.kat-counts.cvg'.format(basefile)})
+            if self.getStrLC('KmerAlt') and self.altKat():
+                self.setStr({'KatAlt':'{0}.alt.kat-counts.cvg'.format(basefile)})
             ### ~ [2] Perform Depth Copy analysis ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             depthcopy = self.callRscript()
             self.debug(depthcopy)
@@ -661,7 +681,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
         try:### ~ [1] Setup ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
             options = ['pngdir={0}.plots'.format(self.baseFile()),'buscocn=FALSE']
             for cmd in ['depfile','busco','scdepth','regfile','winsize','winstep','adjust','cnmax','basefile',
-                        'katfile', 'katself', 'homfile','outdir','pointsize']:
+                        'katfile', 'katself', 'katalt', 'homfile','outdir','pointsize','verbose']:
                 val =  self.getData(cmd)
                 if val and val != 'None':
                     options.append('{0}={1}'.format(cmd,val))
@@ -678,6 +698,7 @@ class DepthKopy(rje_readcore.ReadCore,rje_kat.KAT):
             else:
                 options.append('threads={0}'.format(self.threads()))
             if self.debugging(): options.append('debug=TRUE')
+            if self.dev(): options.append('dev=TRUE')
             if self.getBool('SeqStats'): options.append('seqstats=TRUE')
             optionstr = ' '.join(options)
             return optionstr

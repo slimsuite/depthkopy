@@ -1,7 +1,7 @@
 # DepthKopy: Single-copy read-depth based copy number analysis
 
 ```
-DepthKopy v1.5.0
+DepthKopy v1.6.0
 ```
 
 For a better rendering and navigation of this document, please download and open [`./docs/depthkopy.docs.html`](./docs/depthkopy.docs.html), or visit <https://slimsuite.github.io/depthkopy/>.
@@ -118,6 +118,7 @@ outdir=PATH     : Redirect the outputs of the depthcopy.R script into outdir [./
 pointsize=INT   : Rescale the font size for the DepthKopy plots [24]
 ### ~ KAT kmer options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
 kmerself=T/F        : Whether to perform additional assembly kmer analysis [True]
+kmeralt=FILE        : Fasta file of alternative assembly for KAT kmer analysis [None]
 kmerreads=FILELIST  : File of high quality reads for KAT kmer analysis []
 10xtrim=T/F         : Whether to trim 16bp 10x barcodes from Read 1 of Kmer Reads data for KAT analysis [False]
 ### ~ System options ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ ###
@@ -188,6 +189,19 @@ region, which is then converted into copy number (CN) by dividing by the single-
 are calculated based on random sampling of the observed single copy read depth. (Details to follow: available on request.)
 By default, the R script will parallelise this using the number of threads set with `forks=INT`. If this causes
 memory issues, it can be forced to run with a single thread using `memsaver=T`.
+
+### Region collapse for depth-adjusted copy number
+
+Regions provided for DepthKopy summaries using the `regfile=LIST` can be collapsed to provide overall summary
+statistics using the `collapse=LIST` argument. If a delimited region file has been provided, any fields in
+`collapse=LIST` (`Family` by default) will be used to group and collapse regions. DepthKopy will output the
+number (`N`), summed length (`BP`), predicted copy number (`CN`) and CN-adjusted summed length (`AdjBP`) for
+each unique value of the collapse field. Copy number (`XN`) and summed lengths (`XBP`) adjusted by Mean depth
+(i.e. `MeanX / SCDepth`) are also output. This collapsing is done at three levels: (1) per sequence, (2) totals
+for the whole assembly, and (3) combined totals over all values of the collapse field. Note that no adjustment
+for overlapping features is made for the latter calculation. RepeatMasker GFF files will extract the repeat motif
+name into `Family`. Barrnap rRNA prediction GFF files will extract the rRNA gene product into `Family`. This
+enables a depth-adjusted estimate of rRNA and other repeat copy numbers.
 
 ## Step 6: Outputs
 
